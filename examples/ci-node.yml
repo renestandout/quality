@@ -11,6 +11,11 @@ on:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    # Standardmässig bekommt GITHUB_TOKEN nur Leserechte. gitleaks schreibt
+    # seine Funde als PR-Kommentar und scheitert sonst mit 403.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:

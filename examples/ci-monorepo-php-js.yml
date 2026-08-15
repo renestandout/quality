@@ -16,6 +16,11 @@ on:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    # Standardmässig bekommt GITHUB_TOKEN nur Leserechte. gitleaks schreibt
+    # seine Funde als PR-Kommentar und scheitert sonst mit 403.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       # fetch-depth: 0 ist Pflicht — der Tamper-Check vergleicht gegen den
       # Zielbranch und braucht dessen Vorgeschichte.
@@ -25,7 +30,12 @@ jobs:
 
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.3'          # muss zur Laufzeitversion passen, nicht zur Entwicklungsmaschine
+          # Muss zur LAUFZEIT passen — also zum Image, nicht zur
+          # Entwicklungsmaschine und auch nicht blind zu composer.json: dessen
+          # Constraint ist eine Mindestangabe und hinkt gern hinterher. Bei
+          # adboard verlangte die composer.lock faktisch 8.4.1, während
+          # composer.json noch ^8.3 sagte.
+          php-version: '8.4'
           coverage: none
 
       - uses: actions/setup-node@v4
@@ -39,6 +49,15 @@ jobs:
       - name: Abhängigkeiten (JS)
         working-directory: ads-cockpit/frontend
         run: npm ci
+
+      # Laravel: auch wenn die Tests gegen SQLite im Arbeitsspeicher laufen und
+      # keine Datenbank brauchen — ohne APP_KEY wirft das Framework
+      # MissingAppKeyException, bevor der erste Test startet.
+      - name: Testumgebung vorbereiten
+        working-directory: ads-cockpit/backend
+        run: |
+          cp .env.example .env
+          php artisan key:generate
 
       - name: Qualitätsprüfungen
         run: ads-cockpit/backend/vendor/bin/quality full
