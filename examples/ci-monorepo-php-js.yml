@@ -58,6 +58,9 @@ jobs:
         run: |
           cp .env.example .env
           php artisan key:generate
+          # Bei Laravel Passport zusätzlich nötig — das Schlüsselpaar unter
+          # storage/ liegt lokal längst und fehlt in CI:
+          # php artisan passport:keys --no-interaction
 
       - name: Qualitätsprüfungen
         run: ads-cockpit/backend/vendor/bin/quality full
