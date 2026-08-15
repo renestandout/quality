@@ -1,0 +1,43 @@
+# Quality-Gate für ein reines JS/TS-Projekt (Muster: resplan, Next.js mit pnpm).
+# Nach .github/workflows/quality.yml im Projekt kopieren.
+
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # der Tamper-Check braucht die Vorgeschichte
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Qualitätsprüfungen
+        run: pnpm exec quality full
+
+      - name: Tamper-Check
+        if: always() && github.event_name == 'pull_request'
+        run: pnpm exec quality tamper --base origin/${{ github.base_ref }}
+
+      - name: Abhängigkeiten auf bekannte Lücken prüfen
+        if: always()
+        run: pnpm audit --audit-level=high
+
+      - name: Secret Scanning
+        if: always()
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

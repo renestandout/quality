@@ -1,0 +1,15 @@
+# Das Framework prüft sich selbst.
+version: 1
+level: strict
+baseline: false
+
+tamper:
+  ignore:
+    # Das Regelwerk des Tamper-Checks enthält die gesuchten Muster naturgemäss
+    # als Text — es würde sich sonst bei jeder Änderung selbst anzeigen.
+    - guards/
+    # Beispiel-Workflows sind Vorlagen zum Kopieren, keine aktive CI-Konfiguration.
+    - examples/
+
+components:
+  - { path: ".", stack: node-ts }

@@ -60,6 +60,49 @@ unterscheiden; `--all` prüft alles, `--files a,b` gibt sie explizit vor.
 Ab `task` wird nur noch geprüft, nicht mehr geschrieben — was in CI rot wird,
 soll dort nicht heimlich repariert werden.
 
+## Tamper-Check
+
+`quality tamper` sucht im Diff nach Handgriffen, die ein Gate *umgehen* statt
+es zu erfüllen. Das ist der Teil, der speziell für agentische Entwicklung
+existiert: lokale Hooks lassen sich umgehen, dieser Check läuft in CI über den
+fertigen Diff.
+
+Er meldet neu hinzugefügte Suppressions (`@ts-ignore`, `@phpstan-ignore`,
+`eslint-disable` …), stillgelegte oder auf `.only` verengte Tests, gelöschte
+Testdateien, Änderungen an Baselines, Gate- und CI-Konfiguration sowie
+Lockfile-Änderungen. Test-Muster werden nur in Testdateien gesucht — eine
+Funktion namens `skip()` im Produktivcode ist gewöhnlicher Code.
+
+Lokal (`quality tamper`) wird der uncommittete Stand geprüft, inklusive noch
+nicht erfasster Dateien. In CI vergleicht `--base origin/main` gegen den
+Zielbranch.
+
+Jeder Treffer lässt sich mit einem Commit-Trailer durchwinken:
+
+```
+Quality-Exception: Test hängt an einem externen Dienst, Ticket #123
+```
+
+Die Treffer verschwinden dadurch nicht aus der Ausgabe — sie blockieren nur
+nicht mehr.
+
+**Die Grenze ehrlich benannt:** Ein Agent kann diesen Trailer selbst setzen.
+Der Mechanismus macht Umgehung nicht unmöglich, sondern *unübersehbar* — sie
+steht dann als Begründung in der Commit-Historie statt still im Code. Das ist
+der eigentliche Unterschied zu einem beiläufigen `@ts-ignore`. Die Regel, dass
+der Trailer Menschen vorbehalten ist, gehört ins Agent-Regelwerk.
+
+## CI
+
+Unter `examples/` liegen zwei Vorlagen zum Kopieren nach
+`.github/workflows/quality.yml`. Sie sind bewusst dünn — die Logik steckt im
+Paket, nicht im YAML, damit ein Framework-Update über `composer update` wirkt
+statt über eine Workflow-Version.
+
+Zwei Dinge sind dabei wesentlich: `fetch-depth: 0` beim Checkout, sonst fehlt
+dem Tamper-Check die Vergleichsbasis; und `if: always()` bei den nachgelagerten
+Schritten, damit ein PR in einer Runde alles erfährt statt in zweien.
+
 ## Was das Framework NICHT vereinheitlicht
 
 Den **Linter im JS-Stack**: existiert ein `lint`-Skript, wird es aufgerufen.

@@ -1,0 +1,70 @@
+# Quality-Gate für ein Repo mit PHP-Backend und JS-Frontend (Muster: adboard).
+#
+# Bewusst kein "reusable workflow": die Logik steckt im Paket, nicht im YAML.
+# Dadurch ändert sich diese Datei praktisch nie, und ein Update des Frameworks
+# wirkt über `composer update` statt über eine Workflow-Version.
+#
+# Nach .github/workflows/quality.yml im Projekt kopieren und die Pfade anpassen.
+
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 ist Pflicht — der Tamper-Check vergleicht gegen den
+      # Zielbranch und braucht dessen Vorgeschichte.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'          # muss zur Laufzeitversion passen, nicht zur Entwicklungsmaschine
+          coverage: none
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Abhängigkeiten (PHP)
+        working-directory: ads-cockpit/backend
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Abhängigkeiten (JS)
+        working-directory: ads-cockpit/frontend
+        run: npm ci
+
+      - name: Qualitätsprüfungen
+        run: ads-cockpit/backend/vendor/bin/quality full
+
+      # Läuft auch, wenn oben schon etwas rot ist: ein PR soll in einer Runde
+      # alles erfahren, nicht in zweien.
+      - name: Tamper-Check
+        if: always() && github.event_name == 'pull_request'
+        run: ads-cockpit/backend/vendor/bin/quality tamper --base origin/${{ github.base_ref }}
+
+      - name: Abhängigkeiten auf bekannte Lücken prüfen (PHP)
+        if: always()
+        working-directory: ads-cockpit/backend
+        run: composer audit
+
+      # Nur high/critical blockiert. Ein Gate, das wegen einer transitiven
+      # moderate-Meldung dauerrot ist, wird nach zwei Wochen ignoriert.
+      - name: Abhängigkeiten auf bekannte Lücken prüfen (JS)
+        if: always()
+        working-directory: ads-cockpit/frontend
+        run: npm audit --audit-level=high
+
+      - name: Secret Scanning
+        if: always()
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Für Repos unter einer Organisation verlangt gitleaks eine Lizenz:
+          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
