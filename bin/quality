@@ -1,0 +1,169 @@
+#!/usr/bin/env node
+import { execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { dirname, join, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { ConfigError, loadConfig } from '../lib/config.mjs'
+import { c, runSteps, summarize } from '../lib/run.mjs'
+import { YamlError } from '../lib/yaml.mjs'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const PKG_ROOT = resolve(HERE, '..')
+
+const STAGES = {
+  fix: { verbs: ['fmt', 'lint'], changedOnly: true, check: false },
+  fast: { verbs: ['fmt', 'lint', 'types'], changedOnly: true, check: false },
+  task: { verbs: ['fmt', 'lint', 'types', 'test'], changedOnly: false, check: true },
+  full: { verbs: ['fmt', 'lint', 'types', 'test', 'build'], changedOnly: false, check: true },
+}
+
+const EXTENSIONS = {
+  php: ['.php'],
+  js: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.css', '.json', '.md'],
+}
+
+function usage() {
+  return `${c.bold('quality')} — gemeinsame Qualitätsprüfungen für Standout-Projekte
+
+  ${c.bold('quality fix')}    Formatierung und Linter auf geänderte Dateien (für Editor-Hooks)
+  ${c.bold('quality fast')}   fix + Typprüfung, nur betroffene Komponenten  ${c.dim('(Ziel: < 30 s)')}
+  ${c.bold('quality task')}   volle Prüfung inklusive Tests, ohne Änderungen am Code
+  ${c.bold('quality full')}   task + Build — die Stufe für CI
+
+Optionen
+  --files <a,b>   Dateien explizit angeben statt aus git zu ermitteln
+  --all           alle Komponenten prüfen, auch unveränderte
+  --quiet         Ausgabe der Werkzeuge unterdrücken, nur Zusammenfassung
+  --help          diese Hilfe
+`
+}
+
+function parseArgs(argv) {
+  const options = { stage: null, files: null, all: false, quiet: false, help: false }
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === '--help' || arg === '-h') options.help = true
+    else if (arg === '--all') options.all = true
+    else if (arg === '--quiet') options.quiet = true
+    else if (arg === '--files') options.files = (argv[++i] ?? '').split(',').filter(Boolean)
+    else if (arg.startsWith('--files=')) options.files = arg.slice(8).split(',').filter(Boolean)
+    else if (arg.startsWith('-')) throw new Error(`Unbekannte Option "${arg}". "quality --help" zeigt alle an.`)
+    else if (!options.stage) options.stage = arg
+    else throw new Error(`Unerwartetes Argument "${arg}".`)
+  }
+  return options
+}
+
+/** Dateien, die sich gegenüber HEAD unterscheiden, inklusive neu angelegter. */
+function changedFiles(root) {
+  const run = (args) => {
+    try {
+      return execFileSync('git', args, { cwd: root, encoding: 'utf8' }).split('\n').filter(Boolean)
+    } catch {
+      return []
+    }
+  }
+  const tracked = run(['diff', '--name-only', '--diff-filter=ACMR', 'HEAD'])
+  const untracked = run(['ls-files', '--others', '--exclude-standard'])
+  return [...new Set([...tracked, ...untracked])].filter((f) => existsSync(join(root, f)))
+}
+
+/** Ordnet Dateien den Komponenten zu und macht sie relativ zur Komponente. */
+function filesForComponent(component, files, root) {
+  const base = component.path === '.' ? '' : `${component.path.replace(/\/+$/, '')}/`
+  const allowed = EXTENSIONS[component.kind] ?? []
+  return files
+    .map((f) => (f.startsWith(root) ? relative(root, f) : f))
+    .filter((f) => (base === '' ? true : f.startsWith(base)))
+    .filter((f) => allowed.some((ext) => f.endsWith(ext)))
+    .map((f) => (base === '' ? f : f.slice(base.length)))
+}
+
+async function loadStack(name) {
+  const file = join(PKG_ROOT, 'stacks', `${name}.mjs`)
+  if (!existsSync(file)) throw new Error(`Kein Adapter für stack "${name}" gefunden (erwartet: ${file}).`)
+  return (await import(file)).default
+}
+
+async function main() {
+  let options
+  try {
+    options = parseArgs(process.argv.slice(2))
+  } catch (err) {
+    process.stderr.write(c.red(`${err.message}\n`))
+    return 2
+  }
+
+  if (options.help || !options.stage) {
+    process.stdout.write(usage())
+    return options.help ? 0 : 2
+  }
+
+  const stage = STAGES[options.stage]
+  if (!stage) {
+    process.stderr.write(c.red(`Unbekannte Stufe "${options.stage}". Bekannt sind: ${Object.keys(STAGES).join(', ')}.\n`))
+    return 2
+  }
+
+  let config
+  try {
+    config = loadConfig()
+  } catch (err) {
+    if (err instanceof ConfigError || err instanceof YamlError) {
+      process.stderr.write(c.red(`${err.message}\n`))
+      return 2
+    }
+    throw err
+  }
+
+  const useChanged = stage.changedOnly && !options.all
+  const files = options.files ?? (useChanged ? changedFiles(config.root) : null)
+
+  const steps = []
+  for (const component of config.components) {
+    const stack = await loadStack(component.stack)
+    const enriched = { ...component, kind: stack.kind }
+    const dir = resolve(config.root, component.path)
+    if (!existsSync(dir)) {
+      process.stderr.write(c.red(`Komponente "${component.path}" existiert nicht (${dir}).\n`))
+      return 2
+    }
+
+    const componentFiles = files ? filesForComponent(enriched, files, config.root) : null
+    // Bei einem Datei-Lauf ohne Treffer ist für diese Komponente nichts zu tun.
+    if (componentFiles && componentFiles.length === 0) continue
+
+    const ctx = {
+      dir,
+      root: config.root,
+      component: enriched,
+      config,
+      files: componentFiles,
+      check: stage.check,
+      full: !stage.changedOnly,
+    }
+
+    for (const verb of stage.verbs) {
+      // Die Typprüfung braucht immer das ganze Projekt: eine einzelne Datei
+      // ohne ihren Kontext zu prüfen erzeugt Fehler, die es gar nicht gibt.
+      const verbCtx = verb === 'types' && enriched.kind === 'js' ? { ...ctx, files: null } : ctx
+      const step = stack[verb]?.(verbCtx)
+      if (step) steps.push(step)
+    }
+  }
+
+  if (steps.length === 0) {
+    process.stdout.write(c.dim('Keine geänderten Dateien in konfigurierten Komponenten — nichts zu prüfen.\n'))
+    return 0
+  }
+
+  const results = await runSteps(steps, { quiet: options.quiet, stopOnFail: false })
+  return summarize(results, { label: `quality ${options.stage} — ${config.level}` })
+}
+
+main()
+  .then((code) => process.exit(code))
+  .catch((err) => {
+    process.stderr.write(c.red(`\n${err.stack ?? err.message}\n`))
+    process.exit(1)
+  })

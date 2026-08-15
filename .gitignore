@@ -1,0 +1,6 @@
+node_modules/
+vendor/
+composer.lock
+package-lock.json
+.phpstan-cache/
+.DS_Store

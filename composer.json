@@ -1,0 +1,30 @@
+{
+    "name": "standout/quality",
+    "description": "Gemeinsame Code-Quality-Werkzeuge für Standout-Projekte: Runner, Stack-Adapter und Basiskonfiguration.",
+    "type": "library",
+    "license": "proprietary",
+    "require": {
+        "php": "^8.2"
+    },
+    "require-dev": {
+        "larastan/larastan": "^3.10",
+        "laravel/pint": "^1.18",
+        "phpstan/phpstan": "^2.2"
+    },
+    "suggest": {
+        "larastan/larastan": "Nötig für den laravel-Stack (PHPStan-Erweiterung für Eloquent und Facades).",
+        "laravel/pint": "Nötig für den laravel- und php-Stack (Formatierung)."
+    },
+    "bin": [
+        "bin/quality"
+    ],
+    "autoload": {
+        "psr-4": {
+            "Standout\\Quality\\": "src/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable"
+}

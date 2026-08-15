@@ -1,0 +1,41 @@
+# Gemeinsame PHPStan-Grundlage für Standout-Projekte.
+#
+# Einbinden in der projekteigenen phpstan.neon — Larastan zuerst, damit dessen
+# Erweiterungen greifen:
+#
+#     includes:
+#         - vendor/larastan/larastan/extension.neon
+#         - vendor/standout/quality/configs/phpstan/base.neon
+#         - phpstan-baseline.neon        # nur bei baseline: true
+#
+#     parameters:
+#         paths:
+#             - app
+#             - database
+#             - routes
+#         phpVersion: 80300              # PHP-Version der LAUFZEIT, nicht der Entwicklungsmaschine
+#
+# Das Level steht bewusst nicht hier: es kommt aus quality.yml und wird vom
+# Runner als --level übergeben, damit es eine einzige Quelle der Wahrheit gibt.
+
+parameters:
+    # Meldet Baseline-Einträge, für die es keinen Fehler mehr gibt. Ohne das
+    # wächst eine Baseline nur und niemand merkt, wenn sie schrumpfen könnte.
+    reportUnmatchedIgnoredErrors: true
+
+    # PHPDoc-Angaben werden nicht als gesichert behandelt. In gewachsenem Code
+    # sind sie oft veraltet; sie als Wahrheit zu nehmen erzeugt Folgefehler,
+    # die auf die Doku statt auf den Code zeigen.
+    treatPhpDocTypesAsCertain: false
+
+    # Fehlerhafte Ignore-Kommentare sollen auffallen statt still zu wirken.
+    reportWrongPhpDocTypeInVarTag: true
+
+    tmpDir: %currentWorkingDirectory%/.phpstan-cache
+
+    excludePaths:
+        analyseAndScan:
+            - */vendor/*
+            - */node_modules/*
+            - */storage/*
+            - */bootstrap/cache/*

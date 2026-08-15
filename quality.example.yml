@@ -1,0 +1,20 @@
+# Beispielkonfiguration. In die Repo-Wurzel als quality.yml kopieren und anpassen.
+version: 1
+
+# standard | strict — steuert die Regelschärfe, nicht das Analyse-Level.
+level: standard
+
+# true: vorhandene Fehler sind eingefroren, geprüft wird nur neuer Code.
+baseline: false
+
+components:
+  # Einzelne Anwendung in der Repo-Wurzel:
+  - { path: ".", stack: laravel, php: "8.3", phpstan_level: 5 }
+
+  # Monorepo mit mehreren Anwendungen:
+  # - path: backend
+  #   stack: laravel
+  #   php: "8.3"
+  #   phpstan_level: 5
+  # - path: frontend
+  #   stack: react-ts

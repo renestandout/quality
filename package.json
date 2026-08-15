@@ -1,0 +1,27 @@
+{
+  "name": "@standout/quality",
+  "version": "1.0.0",
+  "description": "Gemeinsame Code-Quality-Werkzeuge für Standout-Projekte: Runner, Stack-Adapter und Basiskonfiguration.",
+  "license": "UNLICENSED",
+  "private": false,
+  "type": "module",
+  "bin": {
+    "quality": "bin/quality"
+  },
+  "exports": {
+    "./prettier": "./configs/prettier.config.js",
+    "./tsconfig": "./configs/tsconfig.base.json",
+    "./tsconfig-strict": "./configs/tsconfig.strict.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "stacks",
+    "guards",
+    "configs"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}
