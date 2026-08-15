@@ -8,6 +8,9 @@ tamper:
     # Das Regelwerk des Tamper-Checks enthält die gesuchten Muster naturgemäss
     # als Text — es würde sich sonst bei jeder Änderung selbst anzeigen.
     - guards/
+    # Dasselbe gilt für die Tests der Bestandsaufnahme: sie enthalten
+    # Suppressions als Prüfdaten, nicht als Anwendung.
+    - lib/audit.test.mjs
     # Beispiel-Workflows sind Vorlagen zum Kopieren, keine aktive CI-Konfiguration.
     - examples/
 

@@ -1,0 +1,53 @@
+# Wöchentliche Bestandsaufnahme.
+# Nach .github/workflows/quality-audit.yml im Projekt kopieren.
+#
+# Das PR-Gate prüft immer nur den Diff und sieht damit nur, was sich ändert.
+# Dieser Lauf sieht, was sich NICHT ändert: eine Baseline, die seit Monaten
+# gleich gross ist, neue Verwundbarkeiten in unveränderten Abhängigkeiten,
+# Suppressions, die sich angesammelt haben.
+#
+# Er schlägt nie fehl — das ist Absicht. Ein wöchentlicher roter Lauf, den
+# niemand beheben kann, wird nach drei Wochen ignoriert.
+
+name: Quality-Audit
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # montags früh
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # gitleaks prüft die gesamte Historie
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: composer install --prefer-dist --no-interaction
+        working-directory: ./       # Pfad der PHP-Komponente anpassen
+
+      - run: npm ci
+        working-directory: ./       # Pfad der JS-Komponente anpassen
+
+      - uses: gitleaks/gitleaks-action@v2
+        continue-on-error: true     # der Fund gehört in den Bericht, nicht in einen roten Lauf
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bestandsaufnahme
+        run: npx quality audit --out audit.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quality-audit
+          path: audit.md
+          retention-days: 90        # damit sich der Verlauf vergleichen lässt

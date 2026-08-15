@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ConfigError, loadConfig } from '../lib/config.mjs'
@@ -27,6 +27,7 @@ const EXTENSIONS = {
 function usage() {
   return `${c.bold('quality')} — gemeinsame Qualitätsprüfungen für Standout-Projekte
 
+Prüfstufen
   ${c.bold('quality fix')}    Formatierung und Linter auf geänderte Dateien (für Editor-Hooks)
   ${c.bold('quality fast')}   fix + Typprüfung, nur betroffene Komponenten  ${c.dim('(Ziel: < 30 s)')}
   ${c.bold('quality task')}   volle Prüfung inklusive Tests, ohne Änderungen am Code
@@ -34,31 +35,125 @@ function usage() {
   ${c.bold('quality tamper')} nur den Tamper-Check: sucht im Diff nach Mustern, die ein Gate
                  umgehen statt erfüllen (Suppressions, stillgelegte Tests, Baselines)
 
+Einstieg in ein bestehendes Projekt
+  ${c.bold('quality audit')}  misst den Ist-Zustand und schlägt eine Konfiguration vor.
+                 Ändert nichts und blockiert nie. ${c.dim('(dauert Minuten)')}
+  ${c.bold('quality init')}   schreibt die vorgeschlagene quality.yml und fehlende phpstan.neon
+
 Optionen
   --files <a,b>   Dateien explizit angeben statt aus git zu ermitteln
   --base <ref>    Diff gegen diesen Stand prüfen (in CI: der Zielbranch des PR)
   --all           alle Komponenten prüfen, auch unveränderte
   --quiet         Ausgabe der Werkzeuge unterdrücken, nur Zusammenfassung
   --help          diese Hilfe
+
+  ${c.dim('audit:')} --json           Bericht als JSON statt Markdown
+          --out <datei>    Bericht zusätzlich in eine Datei schreiben
+          --no-secrets     den gitleaks-Lauf über die Historie überspringen
+  ${c.dim('init:')}  --from <datei>   Empfehlung aus "quality audit --json" übernehmen
+          --dry-run        nur zeigen, was geschrieben würde
+          --force          bestehende Dateien überschreiben
 `
 }
 
+const COMMANDS = ['audit', 'init']
+
 function parseArgs(argv) {
-  const options = { stage: null, files: null, base: null, all: false, quiet: false, help: false }
+  const options = {
+    stage: null,
+    files: null,
+    base: null,
+    all: false,
+    quiet: false,
+    help: false,
+    json: false,
+    out: null,
+    secrets: true,
+    from: null,
+    dryRun: false,
+    force: false,
+  }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === '--help' || arg === '-h') options.help = true
     else if (arg === '--all') options.all = true
     else if (arg === '--quiet') options.quiet = true
+    else if (arg === '--json') options.json = true
+    else if (arg === '--no-secrets') options.secrets = false
+    else if (arg === '--dry-run') options.dryRun = true
+    else if (arg === '--force') options.force = true
     else if (arg === '--files') options.files = (argv[++i] ?? '').split(',').filter(Boolean)
     else if (arg.startsWith('--files=')) options.files = arg.slice(8).split(',').filter(Boolean)
     else if (arg === '--base') options.base = argv[++i] ?? null
     else if (arg.startsWith('--base=')) options.base = arg.slice(7)
+    else if (arg === '--out') options.out = argv[++i] ?? null
+    else if (arg.startsWith('--out=')) options.out = arg.slice(6)
+    else if (arg === '--from') options.from = argv[++i] ?? null
+    else if (arg.startsWith('--from=')) options.from = arg.slice(7)
     else if (arg.startsWith('-')) throw new Error(`Unbekannte Option "${arg}". "quality --help" zeigt alle an.`)
     else if (!options.stage) options.stage = arg
     else throw new Error(`Unerwartetes Argument "${arg}".`)
   }
   return options
+}
+
+/**
+ * Die Wurzel des zu prüfenden Repositories.
+ * Für audit und init gibt es noch keine quality.yml, an der man sie erkennt —
+ * deshalb fragt hier git, und nur ersatzweise gilt das Arbeitsverzeichnis.
+ */
+function repoRoot() {
+  try {
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+  } catch {
+    return process.cwd()
+  }
+}
+
+async function runAuditCommand(options) {
+  const { runAudit } = await import('../lib/audit-run.mjs')
+  const { renderAudit } = await import('../lib/audit-report.mjs')
+  const root = repoRoot()
+  const report = await runAudit(root, { quiet: options.quiet, secrets: options.secrets })
+  const text = options.json
+    ? JSON.stringify(report, null, 2) + '\n'
+    : renderAudit(report, { generatedAt: new Date().toISOString().slice(0, 10) })
+  process.stdout.write(text)
+  if (options.out) {
+    writeFileSync(resolve(root, options.out), text)
+    process.stderr.write(c.dim(`\nBericht geschrieben: ${options.out}\n`))
+  }
+  // Report-only: ein Audit meldet einen Befund, kein Urteil.
+  return 0
+}
+
+async function runInitCommand(options) {
+  const { applyInit, loadRecommendation, printInitResult } = await import('../lib/init.mjs')
+  const root = repoRoot()
+
+  let recommendation
+  if (options.from) {
+    recommendation = loadRecommendation(resolve(root, options.from))
+  } else {
+    const { runAudit } = await import('../lib/audit-run.mjs')
+    process.stderr.write(
+      c.dim('Kein --from angegeben: init misst selbst, damit die Konfiguration auf Zahlen beruht.\n')
+    )
+    const report = await runAudit(root, { quiet: options.quiet, secrets: false })
+    if (!report.recommendation) {
+      process.stderr.write(c.red('Keine Komponente erkannt — hier gibt es nichts zu konfigurieren.\n'))
+      return 2
+    }
+    recommendation = report.recommendation
+  }
+
+  const result = applyInit(root, recommendation, {
+    pkgRoot: PKG_ROOT,
+    force: options.force,
+    dryRun: options.dryRun,
+  })
+  printInitResult(result, { dryRun: options.dryRun })
+  return result.written.length === 0 ? 1 : 0
 }
 
 /** Dateien, die sich gegenüber HEAD unterscheiden, inklusive neu angelegter. */
@@ -106,9 +201,21 @@ async function main() {
     return options.help ? 0 : 2
   }
 
+  // audit und init laufen ohne quality.yml — sie sind ja dafür da, sie zu erzeugen.
+  if (COMMANDS.includes(options.stage)) {
+    try {
+      return options.stage === 'audit' ? await runAuditCommand(options) : await runInitCommand(options)
+    } catch (err) {
+      process.stderr.write(c.red(`${err.message}\n`))
+      return 2
+    }
+  }
+
   const stage = STAGES[options.stage]
   if (!stage) {
-    process.stderr.write(c.red(`Unbekannte Stufe "${options.stage}". Bekannt sind: ${Object.keys(STAGES).join(', ')}.\n`))
+    process.stderr.write(
+      c.red(`Unbekannt: "${options.stage}". Bekannt sind: ${[...Object.keys(STAGES), ...COMMANDS].join(', ')}.\n`)
+    )
     return 2
   }
 

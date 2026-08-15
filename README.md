@@ -54,11 +54,56 @@ Schärfe der Regeln, das Level den heute erreichten Stand.
 | `quality fast` | zusätzlich Typprüfung | Task-Abschluss, pre-commit (Ziel: < 30 s) |
 | `quality task` | alles ausser Build, inklusive Tests; ändert nichts am Code | vor dem Commit |
 | `quality full` | zusätzlich Build | CI |
+| `quality audit` | Bestandsaufnahme, ändert nichts | vor dem Onboarding, danach periodisch |
 
 `fix` und `fast` beschränken sich auf Dateien, die sich gegenüber `HEAD`
 unterscheiden; `--all` prüft alles, `--files a,b` gibt sie explizit vor.
 Ab `task` wird nur noch geprüft, nicht mehr geschrieben — was in CI rot wird,
 soll dort nicht heimlich repariert werden.
+
+## Ein bestehendes Projekt aufnehmen
+
+Das laufende Gate prüft immer nur Diffs. Ein gewachsenes Projekt braucht davor
+eine Bestandsaufnahme — sonst rät man die Einstellungen, mit denen man startet.
+
+```bash
+quality audit                 # misst, ändert nichts, blockiert nie
+quality audit --out audit.md  # zusätzlich als Datei
+quality init                  # schreibt die vorgeschlagene Konfiguration
+```
+
+`audit` erkennt die Komponenten selbst und misst je Komponente: die
+PHPStan-Fehlerzahl **je Level**, Typprüfung und Linter, Formatierung,
+verwundbare Abhängigkeiten, vorhandene Suppressions und stillgelegte Tests.
+Dazu einmal fürs ganze Repository: gitleaks über die **gesamte Git-Historie**.
+
+Der Dependency-Audit läuft je Komponente, nicht je Repository. Das klingt nach
+einem Detail, ist aber der Unterschied zwischen „`composer audit` ist grün" und
+„das Frontend hatte vier offene Verwundbarkeiten" — genau so ist es bei adboard
+passiert, bevor es dieses Werkzeug gab.
+
+### Wie das Level zustande kommt
+
+Der Audit sucht das höchste PHPStan-Level, auf dem das Projekt heute
+fehlerfrei ist: erst Level 9, sonst binäre Suche. Das kostet vier bis sechs
+Läufe statt zehn.
+
+Gibt es kein fehlerfreies Level, gilt das höchste, dessen Fehlerzahl noch
+unter 500 liegt — mit Baseline. Die Grenze ist bewusst da: eine Baseline mit
+vierstelliger Fehlerzahl trägt niemand mehr ab, sie ist Kapitulation mit
+Zwischenschritt. Ist schon Level 0 darüber, sagt der Bericht genau das.
+
+Zusätzlich zeigt er, wie sich die Fehler verteilen. Bei adboard stecken 164
+der 429 Fehler in fünf von 61 Dateien — das entscheidet, ob eine Baseline
+abtragbar ist, und steht in keiner Gesamtzahl.
+
+**Wurde nicht gemessen, steht das im Vorschlag.** Fehlt PHPStan, schlägt der
+Bericht trotzdem Level 5 mit Baseline vor, markiert die Zahl aber im YAML als
+`# ungemessen`. Die Empfehlung wegzulassen wäre der gefährlichere Weg: die
+Konfiguration liefe dann still auf dem Standardwert ohne Baseline.
+
+`init` schreibt nur, was der Audit gemessen hat, und überschreibt nichts von
+sich aus (`--force`, `--dry-run`, `--from audit.json`).
 
 ## Tamper-Check
 
@@ -158,7 +203,7 @@ projektübergreifend zählt sie nicht genug, um dafür halbe Codebasen anzufasse
 ## Entwicklung
 
 ```bash
-node --test 'lib/*.test.mjs'
+npm test
 ```
 
 Der Runner kommt ohne Laufzeit-Abhängigkeiten aus — bei einer

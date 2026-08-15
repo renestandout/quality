@@ -18,11 +18,6 @@
     "bin": [
         "bin/quality"
     ],
-    "autoload": {
-        "psr-4": {
-            "Standout\\Quality\\": "src/"
-        }
-    },
     "config": {
         "sort-packages": true
     },
