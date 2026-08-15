@@ -9,7 +9,7 @@
     {
       "name": "quality",
       "description": "Qualitäts-Gate für Standout-Projekte: Prüfungen nach jedem Edit, blockierter Task-Abschluss bei roten Checks, Schutz für Baselines und Gate-Konfiguration.",
-      "version": "1.0.0",
+      "version": "0.1.5",
       "source": "./"
     }
   ]
