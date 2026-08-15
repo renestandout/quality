@@ -31,6 +31,20 @@ function assertRevisionExists(ref, root) {
   }
 }
 
+/**
+ * Gibt es überhaupt schon einen Commit?
+ * Vor dem ersten gibt es kein HEAD — ein frisch angelegtes Repository ist
+ * genau der Zustand, in dem ein Projekt das Gate zum ersten Mal aufruft.
+ */
+export function hasCommit(root) {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], { cwd: root, stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
 const MAX_UNTRACKED_BYTES = 512 * 1024
 
 /**
@@ -40,8 +54,10 @@ const MAX_UNTRACKED_BYTES = 512 * 1024
  * angelegte Datei mit Suppression lokal unsichtbar und fiele erst in CI auf.
  * Genau das soll der lokale Lauf ja verhindern.
  */
-function untrackedAsAdded(root) {
-  const paths = git(['ls-files', '--others', '--exclude-standard'], root).split('\n').filter(Boolean)
+function untrackedAsAdded(root, { includeCached = false } = {}) {
+  const args = ['ls-files', '--others', '--exclude-standard']
+  if (includeCached) args.push('--cached')
+  const paths = git(args, root).split('\n').filter(Boolean)
   const files = []
   for (const path of paths) {
     try {
@@ -81,13 +97,20 @@ function isBotAuthor(root, base) {
  */
 export function runTamper({ root, base = null, ignorePaths = [], quiet = false }) {
   if (base) assertRevisionExists(base, root)
+  // Ohne ersten Commit gibt es kein HEAD: dann ist der gesamte Stand neu.
+  const committed = hasCommit(root)
   const diffText = base
     ? git(['diff', '--unified=0', `${base}...HEAD`], root)
-    : git(['diff', '--unified=0', 'HEAD'], root)
+    : committed
+      ? git(['diff', '--unified=0', 'HEAD'], root)
+      : ''
 
   // Nur im lokalen Modus: dort sind neu angelegte Dateien noch nicht erfasst.
   // Mit `base` sind sie längst Teil der Commits und stehen im Diff.
-  const files = [...parseDiff(diffText), ...(base ? [] : untrackedAsAdded(root))]
+  const files = [
+    ...parseDiff(diffText),
+    ...(base ? [] : untrackedAsAdded(root, { includeCached: !committed })),
+  ]
   const botAuthor = isBotAuthor(root, base)
   const all = analyseDiff(files, { botAuthor, ignorePaths })
 

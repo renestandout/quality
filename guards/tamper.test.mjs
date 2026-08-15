@@ -1,5 +1,5 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { test } from 'node:test'
 import { SOFT_LOCALLY, analyseDiff, findException, parseDiff } from './tamper.mjs'
 
 const diff = (body) => parseDiff(body.trimStart())
@@ -297,4 +297,19 @@ diff --git a/composer.lock b/composer.lock
   for (const rule of SOFT_LOCALLY) {
     assert.ok(erzeugt.has(rule), `Regel "${rule}" wird von analyseDiff nicht mehr erzeugt`)
   }
+})
+
+test('Fremdcode wird nie bewertet, auch wenn er mitcommittet ist', () => {
+  // Gewachsene CMS-Projekte committen vendor/ regelmässig mit. Ein
+  // @ts-ignore darin stammt nicht vom Entwickler dieses Projekts.
+  const findings = analyseDiff([
+    {
+      path: 'vendor/fremd/paket/src/A.php',
+      added: [{ line: 1, text: '// @phpstan-ignore-next-line' }],
+      deleted: false,
+    },
+    { path: 'node_modules/foo/index.js', added: [{ line: 1, text: '// eslint-disable' }], deleted: false },
+    { path: 'tests/vendor/MeinTest.php', deleted: true, added: [] },
+  ])
+  assert.deepEqual(findings, [])
 })

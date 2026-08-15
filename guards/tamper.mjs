@@ -58,6 +58,14 @@ export const PROTECTED_PATHS = [
 const LOCKFILES = /(^|\/)(composer\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/
 
 /**
+ * Fremdcode. Wird nie bewertet — auch dann nicht, wenn ein Projekt seine
+ * Abhängigkeiten mitcommittet, wie es bei gewachsenen CMS-Projekten
+ * regelmässig vorkommt. Ein `@ts-ignore` in einem fremden Paket ist keine
+ * Umgehung durch den Entwickler, sondern die Arbeit von jemand anderem.
+ */
+export const VENDOR_PATH = /(^|\/)(vendor|node_modules|bower_components|\.venv|venv|third_party)\//
+
+/**
  * Muster in hinzugefügten Zeilen.
  * `scope: 'test'` beschränkt die Prüfung auf Testdateien — "skip" oder "only"
  * in Produktivcode ist gewöhnlicher Code und kein Umgehungsversuch.
@@ -182,7 +190,7 @@ export function analyseDiff(files, { botAuthor = false, ignorePaths = [] } = {})
   const ignored = (path) => ignorePaths.some((p) => path.startsWith(p))
 
   for (const file of files) {
-    if (ignored(file.path)) continue
+    if (ignored(file.path) || VENDOR_PATH.test(file.path)) continue
 
     if (file.deleted) {
       if (isTestFile(file.path)) {

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { ConfigError, loadConfig } from '../lib/config.mjs'
 import { c, runSteps, summarize } from '../lib/run.mjs'
 import { YamlError } from '../lib/yaml.mjs'
-import { runTamper } from '../guards/tamper-git.mjs'
+import { hasCommit, runTamper } from '../guards/tamper-git.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
@@ -160,14 +160,21 @@ async function runInitCommand(options) {
 function changedFiles(root) {
   const run = (args) => {
     try {
-      return execFileSync('git', args, { cwd: root, encoding: 'utf8' }).split('\n').filter(Boolean)
+      // stderr verschlucken: die Fälle, in denen git hier klagt, fangen wir
+      // selbst ab — eine rohe git-Meldung hilft niemandem weiter.
+      return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+        .split('\n')
+        .filter(Boolean)
     } catch {
       return []
     }
   }
-  const tracked = run(['diff', '--name-only', '--diff-filter=ACMR', 'HEAD'])
-  const untracked = run(['ls-files', '--others', '--exclude-standard'])
-  return [...new Set([...tracked, ...untracked])].filter((f) => existsSync(join(root, f)))
+  // Vor dem ersten Commit gibt es kein HEAD, gegen das sich vergleichen liesse.
+  // Dann ist schlicht alles neu — das ist der Normalfall beim Onboarding.
+  const files = hasCommit(root)
+    ? [...run(['diff', '--name-only', '--diff-filter=ACMR', 'HEAD']), ...run(['ls-files', '--others', '--exclude-standard'])]
+    : run(['ls-files', '--cached', '--others', '--exclude-standard'])
+  return [...new Set(files)].filter((f) => existsSync(join(root, f)))
 }
 
 /** Ordnet Dateien den Komponenten zu und macht sie relativ zur Komponente. */
