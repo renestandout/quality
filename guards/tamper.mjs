@@ -13,6 +13,16 @@
 
 export const EXCEPTION_TRAILER = 'Quality-Exception:'
 
+/**
+ * Regeln, die lokal nur berichtet und erst in CI bindend werden.
+ *
+ * Beides beschreibt Arbeit, die typischerweise vom Menschen kommt: die
+ * Gate-Konfiguration anlegen oder ein Paket hinzufügen. Lokal gibt es noch
+ * keinen Commit und damit keinen Trailer, mit dem man das durchwinken könnte —
+ * ein Projekt käme sonst gar nicht erst durch sein eigenes Onboarding.
+ */
+export const SOFT_LOCALLY = new Set(['protected.changed', 'dependency.changed'])
+
 /** Dateien, in denen Test-Muster überhaupt geprüft werden. */
 const TEST_FILE = /(^|\/)(tests?|__tests__|spec)\//i
 // Die Modul-Endungen .mjs/.cjs gehören zwingend dazu: node --test nutzt sie,
@@ -24,7 +34,12 @@ const isTestFile = (path) => TEST_FILE.test(path) || TEST_NAME.test(path)
 /** Quellcode, in dem Suppressions gesucht werden — nicht in Sperr-/Buildartefakten. */
 const SOURCE_FILE = /\.(php|[jt]sx?|mjs|cjs|vue|py)$/i
 
-const PROTECTED_PATHS = [
+/**
+ * Dateien, die das Gate selbst definieren. Dieselbe Liste dient dem
+ * PreToolUse-Hook als Blockliste — es soll nicht zwei Wahrheiten darüber
+ * geben, was geschützt ist.
+ */
+export const PROTECTED_PATHS = [
   // Der CI-Workflow steht zuerst: eine Datei wie .github/workflows/quality.yml
   // ist ein Workflow und keine Quality-Konfiguration, auch wenn sie so heisst.
   { pattern: /^\.github\/workflows\//, label: 'CI-Workflow' },

@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { c } from '../lib/run.mjs'
-import { EXCEPTION_TRAILER, analyseDiff, findException, parseDiff } from './tamper.mjs'
+import { EXCEPTION_TRAILER, SOFT_LOCALLY, analyseDiff, findException, parseDiff } from './tamper.mjs'
 
 function git(args, cwd) {
   try {
@@ -89,10 +89,36 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
   // Mit `base` sind sie längst Teil der Commits und stehen im Diff.
   const files = [...parseDiff(diffText), ...(base ? [] : untrackedAsAdded(root))]
   const botAuthor = isBotAuthor(root, base)
-  const findings = analyseDiff(files, { botAuthor, ignorePaths })
+  const all = analyseDiff(files, { botAuthor, ignorePaths })
+
+  /*
+   * Lokal wiegen zwei Regeln leichter als in CI.
+   *
+   * Eine geänderte Gate-Konfiguration oder ein neues Paket ist meist Arbeit
+   * des Menschen — beim Onboarding legt man quality.yml überhaupt erst an.
+   * Lokal gibt es aber noch keinen Commit und damit keinen Trailer, mit dem
+   * sich das durchwinken liesse: das Gate wäre unpassierbar, bevor das
+   * Projekt es je benutzt hat. Und was der Agent hier anrichten könnte,
+   * verhindert bereits der PreToolUse-Hook.
+   *
+   * Die Regeln, die Agentenverhalten betreffen — Suppressions, stillgelegte
+   * oder gelöschte Tests — blockieren auch lokal.
+   */
+  const localMode = !base
+  const findings = localMode ? all.filter((f) => !SOFT_LOCALLY.has(f.rule)) : all
+  const informational = localMode ? all.filter((f) => SOFT_LOCALLY.has(f.rule)) : []
 
   if (findings.length === 0) {
-    if (!quiet) process.stdout.write(c.green('✓ Tamper-Check: keine Umgehungsmuster im Diff.\n'))
+    if (informational.length > 0 && !quiet) {
+      process.stdout.write(
+        c.dim(
+          `Tamper-Check: ${informational.length} Hinweis(e) ohne Blockade — ` +
+            `${informational.map((f) => f.path).join(', ')}. In CI zählen sie.\n`
+        )
+      )
+    } else if (!quiet) {
+      process.stdout.write(c.green('✓ Tamper-Check: keine Umgehungsmuster im Diff.\n'))
+    }
     return 0
   }
 

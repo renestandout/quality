@@ -92,6 +92,48 @@ steht dann als Begründung in der Commit-Historie statt still im Code. Das ist
 der eigentliche Unterschied zu einem beiläufigen `@ts-ignore`. Die Regel, dass
 der Trailer Menschen vorbehalten ist, gehört ins Agent-Regelwerk.
 
+## Claude-Code-Plugin
+
+Dasselbe Repo ist ein Claude-Code-Plugin. Es installiert drei Hooks und einen
+Skill, der den Arbeitsablauf und die Grenzen beschreibt.
+
+```
+/plugin marketplace add renestandout/quality
+/plugin install quality@standout
+```
+
+| Hook | Wann | Was |
+|---|---|---|
+| PreToolUse | vor Edit/Write | verweigert Schreibzugriff auf Baselines, Gate- und Linter-Konfiguration, CI-Workflows |
+| PostToolUse | nach jedem Edit | formatiert und lintet **die eine** geänderte Datei, meldet Fundstellen zurück |
+| Stop | vor Task-Abschluss | führt `quality fast` aus und blockiert, solange etwas rot ist |
+
+Drei Eigenschaften sind dabei wichtiger als die Hooks selbst:
+
+**Ohne `quality.yml` passiert nichts.** In Projekten ohne Gate beenden sich
+alle drei Hooks sofort mit 0. Das Plugin darf global installiert sein, ohne
+irgendwo im Weg zu stehen.
+
+**Der Stop-Hook gibt nach drei Runden auf.** Danach fordert er den Agenten auf,
+dem Menschen zu berichten, statt weiterzubasteln — und lässt beim nächsten
+Versuch durch. Ein Gate, das endlos blockiert, verbrennt Kontext und provoziert
+genau die Umgehungen, die es verhindern soll. Ein Timeout lässt ebenfalls
+durch, weist aber darauf hin, dass der Stand ungeprüft ist.
+
+**Die Meldungen der Werkzeuge kommen vollständig beim Agenten an**, nicht nur
+die Information, dass etwas rot ist. „oxlint fehlgeschlagen" kann niemand
+beheben; `src/a.ts:3:9: 'x' is declared but never used` schon.
+
+### Lokal weicher als in CI
+
+Zwei Tamper-Regeln — geänderte Gate-Konfiguration und geänderte Lockfiles —
+melden lokal nur, ohne zu blockieren. Sie beschreiben Arbeit, die vom Menschen
+kommt, und lokal gibt es noch keinen Commit, in dem eine Ausnahme stehen
+könnte: ein Projekt käme sonst nicht einmal durch sein eigenes Onboarding, weil
+das Anlegen der `quality.yml` das Gate schliesst. In CI zählen beide Regeln
+normal. Was Agentenverhalten betrifft — Suppressions, stillgelegte oder
+gelöschte Tests — blockiert auch lokal.
+
 ## CI
 
 Unter `examples/` liegen zwei Vorlagen zum Kopieren nach

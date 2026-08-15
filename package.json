@@ -19,7 +19,10 @@
     "lib",
     "stacks",
     "guards",
-    "configs"
+    "configs",
+    "hooks",
+    "skills",
+    ".claude-plugin"
   ],
   "engines": {
     "node": ">=20"

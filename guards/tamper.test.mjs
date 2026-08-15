@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { analyseDiff, findException, parseDiff } from './tamper.mjs'
+import { SOFT_LOCALLY, analyseDiff, findException, parseDiff } from './tamper.mjs'
 
 const diff = (body) => parseDiff(body.trimStart())
 
@@ -268,4 +268,33 @@ diff --git a/README.md b/README.md
 +Beispiel: mit @ts-ignore lässt sich das abschalten.
 `)
   assert.deepEqual(findings, [])
+})
+
+test('die lokal weichen Regeln entsprechen tatsächlich erzeugten Regel-IDs', () => {
+  // Schützt davor, dass eine Regel umbenannt wird und die Ausnahme still
+  // ins Leere greift — dann würde lokal blockiert, was blockieren soll,
+  // oder schlimmer: es würde nichts mehr blockieren.
+  const erzeugt = new Set()
+  const proben = [
+    `
+diff --git a/quality.yml b/quality.yml
+--- a/quality.yml
++++ b/quality.yml
+@@ -1,1 +1,2 @@
+ version: 1
++level: strict
+`,
+    `
+diff --git a/composer.lock b/composer.lock
+--- a/composer.lock
++++ b/composer.lock
+@@ -1,1 +1,2 @@
+ {
++  "x": 1
+`,
+  ]
+  for (const p of proben) for (const f of check(p)) erzeugt.add(f.rule)
+  for (const rule of SOFT_LOCALLY) {
+    assert.ok(erzeugt.has(rule), `Regel "${rule}" wird von analyseDiff nicht mehr erzeugt`)
+  }
 })

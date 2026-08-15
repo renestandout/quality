@@ -42,26 +42,36 @@ export default {
   },
 
   lint(ctx) {
+    // Sind einzelne Dateien gemeint (Editor-Hook), muss der Linter direkt
+    // aufgerufen werden: ein npm-Skript nimmt keine Dateiargumente entgegen
+    // und würde jedes Mal das ganze Projekt prüfen — im Hook-Betrieb wäre das
+    // um Grössenordnungen zu teuer und dazu das falsche Ergebnis.
+    const wantsFiles = Boolean(ctx.files?.length)
     const scripts = packageScripts(ctx.dir)
+
+    if (!wantsFiles && scripts.lint) return npmRun('lint', ctx, 'lint')
+
+    // Beide Linter melden Regelverstösse standardmässig als Warnung und
+    // beenden mit 0 — ein Gate, das darauf hört, meldet nie etwas. Unter
+    // "strict" zählen Warnungen deshalb als Fehler.
+    const strict = ctx.config?.level === 'strict'
+    for (const [tool, strictArgs, fallbackArgs] of [
+      ['oxlint', ['--deny-warnings'], []],
+      ['eslint', ['--max-warnings=0'], ['.']],
+    ]) {
+      const bin = findBinary(tool, { dir: ctx.dir, root: ctx.root, kind: 'js' })
+      if (bin) {
+        return {
+          name: `${tool} (${ctx.component.path})`,
+          cmd: bin,
+          args: [...(strict ? strictArgs : []), ...(wantsFiles ? ctx.files : fallbackArgs)],
+          cwd: ctx.dir,
+        }
+      }
+    }
+
+    // Kein eigenes Binary auffindbar: dann ist das Projekt-Skript besser als nichts.
     if (scripts.lint) return npmRun('lint', ctx, 'lint')
-    const oxlint = findBinary('oxlint', { dir: ctx.dir, root: ctx.root, kind: 'js' })
-    if (oxlint) {
-      return {
-        name: `oxlint (${ctx.component.path})`,
-        cmd: oxlint,
-        args: ctx.files?.length ? ctx.files : [],
-        cwd: ctx.dir,
-      }
-    }
-    const eslint = findBinary('eslint', { dir: ctx.dir, root: ctx.root, kind: 'js' })
-    if (eslint) {
-      return {
-        name: `eslint (${ctx.component.path})`,
-        cmd: eslint,
-        args: ctx.files?.length ? ctx.files : ['.'],
-        cwd: ctx.dir,
-      }
-    }
     return { name: 'lint', skip: 'kein lint-Skript, oxlint oder eslint gefunden' }
   },
 
