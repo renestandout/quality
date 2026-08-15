@@ -15,7 +15,9 @@ export const EXCEPTION_TRAILER = 'Quality-Exception:'
 
 /** Dateien, in denen Test-Muster überhaupt geprüft werden. */
 const TEST_FILE = /(^|\/)(tests?|__tests__|spec)\//i
-const TEST_NAME = /\.(test|spec)\.[jt]sx?$|Test\.php$|_test\.py$/i
+// Die Modul-Endungen .mjs/.cjs gehören zwingend dazu: node --test nutzt sie,
+// und ohne sie bliebe ein stillgelegter Test in einer .test.mjs unbemerkt.
+const TEST_NAME = /\.(test|spec)\.[mc]?[jt]sx?$|Test\.php$|_test\.py$|test_.*\.py$/i
 
 const isTestFile = (path) => TEST_FILE.test(path) || TEST_NAME.test(path)
 

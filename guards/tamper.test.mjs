@@ -88,6 +88,29 @@ diff --git a/src/app.test.ts b/src/app.test.ts
   assert.deepEqual(rules(findings), ['test.focused'])
 })
 
+test('Testdateien werden über alle üblichen Endungen erkannt', () => {
+  // .test.mjs fiel im ersten Anlauf durch das Raster — node --test nutzt genau
+  // diese Endung, und der stillgelegte Test blieb dadurch unbemerkt.
+  for (const path of [
+    'lib/probe.test.mjs',
+    'lib/probe.test.cjs',
+    'src/a.test.ts',
+    'src/a.spec.tsx',
+    'tests/Feature/LoginTest.php',
+    'app/tests/helper.js',
+  ]) {
+    const findings = check(`
+diff --git a/${path} b/${path}
+--- a/${path}
++++ b/${path}
+@@ -1,1 +1,2 @@
+ const x = 1
++test.skip('x', () => {})
+`)
+    assert.deepEqual(rules(findings), ['test.skipped'], `nicht als Testdatei erkannt: ${path}`)
+  }
+})
+
 test('Wörter wie skip oder only im Produktivcode sind kein Fund', () => {
   const findings = check(`
 diff --git a/src/pagination.ts b/src/pagination.ts
