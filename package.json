@@ -28,6 +28,6 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test 'lib/*.test.mjs' 'guards/*.test.mjs'"
+    "test": "node --test 'lib/*.test.mjs' 'guards/*.test.mjs' 'configs/*.test.mjs'"
   }
 }

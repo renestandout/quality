@@ -31,7 +31,12 @@ parameters:
     # Fehlerhafte Ignore-Kommentare sollen auffallen statt still zu wirken.
     reportWrongPhpDocTypeInVarTag: true
 
-    tmpDir: %currentWorkingDirectory%/.phpstan-cache
+    # tmpDir steht bewusst NICHT hier. Ein projektlokaler Cache liesse sich in
+    # CI zwar wiederverwenden, aber er erzeugt ein Verzeichnis im Projekt, das
+    # jeder selbst in .gitignore aufnehmen müsste — und wer das vergisst,
+    # bekommt den Cache vom Tamper-Check als neuen Code vorgehalten (genau so
+    # beim adboard-Rollout passiert). PHPStans Standard im System-Temp ist
+    # spurenfrei und wird zwischen Läufen ebenso wiederverwendet.
 
     excludePaths:
         analyseAndScan:
