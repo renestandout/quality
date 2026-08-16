@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { COMMANDS, ONLY_NAMES, STAGES, parseArgs, planFor } from '../lib/args.mjs'
 import { ConfigError, loadConfig } from '../lib/config.mjs'
 import { filesForComponent, filesForVerb } from '../lib/files.mjs'
 import { c, runSteps, summarize } from '../lib/run.mjs'
@@ -11,14 +12,6 @@ import { hasCommit, runTamper } from '../guards/tamper-git.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
-
-const STAGES = {
-  fix: { verbs: ['fmt', 'lint'], changedOnly: true, check: false, tamper: false },
-  fast: { verbs: ['fmt', 'lint', 'types'], changedOnly: true, check: false, tamper: true },
-  task: { verbs: ['fmt', 'lint', 'types', 'test'], changedOnly: false, check: true, tamper: true },
-  full: { verbs: ['fmt', 'lint', 'types', 'test', 'build'], changedOnly: false, check: true, tamper: true },
-  tamper: { verbs: [], changedOnly: false, check: true, tamper: true },
-}
 
 function usage() {
   return `${c.bold('quality')} — gemeinsame Qualitätsprüfungen für Standout-Projekte
@@ -38,6 +31,8 @@ Einstieg in ein bestehendes Projekt
 
 Optionen
   --files <a,b>   Dateien explizit angeben statt aus git zu ermitteln
+  --only <a,b>    nur diese Schritte der Stufe ausführen, Rest weglassen
+                  ${c.dim(`(${ONLY_NAMES.join(', ')})`)}
   --base <ref>    Diff gegen diesen Stand prüfen (in CI: der Zielbranch des PR)
   --all           alle Komponenten prüfen, auch unveränderte
   --quiet         Ausgabe der Werkzeuge unterdrücken, nur Zusammenfassung
@@ -50,47 +45,6 @@ Optionen
           --dry-run        nur zeigen, was geschrieben würde
           --force          bestehende Dateien überschreiben
 `
-}
-
-const COMMANDS = ['audit', 'init']
-
-function parseArgs(argv) {
-  const options = {
-    stage: null,
-    files: null,
-    base: null,
-    all: false,
-    quiet: false,
-    help: false,
-    json: false,
-    out: null,
-    secrets: true,
-    from: null,
-    dryRun: false,
-    force: false,
-  }
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]
-    if (arg === '--help' || arg === '-h') options.help = true
-    else if (arg === '--all') options.all = true
-    else if (arg === '--quiet') options.quiet = true
-    else if (arg === '--json') options.json = true
-    else if (arg === '--no-secrets') options.secrets = false
-    else if (arg === '--dry-run') options.dryRun = true
-    else if (arg === '--force') options.force = true
-    else if (arg === '--files') options.files = (argv[++i] ?? '').split(',').filter(Boolean)
-    else if (arg.startsWith('--files=')) options.files = arg.slice(8).split(',').filter(Boolean)
-    else if (arg === '--base') options.base = argv[++i] ?? null
-    else if (arg.startsWith('--base=')) options.base = arg.slice(7)
-    else if (arg === '--out') options.out = argv[++i] ?? null
-    else if (arg.startsWith('--out=')) options.out = arg.slice(6)
-    else if (arg === '--from') options.from = argv[++i] ?? null
-    else if (arg.startsWith('--from=')) options.from = arg.slice(7)
-    else if (arg.startsWith('-')) throw new Error(`Unbekannte Option "${arg}". "quality --help" zeigt alle an.`)
-    else if (!options.stage) options.stage = arg
-    else throw new Error(`Unerwartetes Argument "${arg}".`)
-  }
-  return options
 }
 
 /**
@@ -222,6 +176,16 @@ async function main() {
     throw err
   }
 
+  // --only kann eine Stufe auf einen Teil beschränken — etwa auf den
+  // statischen, wenn die Tests in CI als eigener Job parallel laufen.
+  const plan = planFor(stage, options.only)
+  if (plan.verbs.length === 0 && !plan.tamper) {
+    process.stderr.write(
+      c.red(`--only lässt von "quality ${options.stage}" nichts übrig (Stufe kennt: ${stage.verbs.join(', ')}${stage.tamper ? ', tamper' : ''}).\n`)
+    )
+    return 2
+  }
+
   const useChanged = stage.changedOnly && !options.all
   const files = options.files ?? (useChanged ? changedFiles(config.root) : null)
 
@@ -249,7 +213,7 @@ async function main() {
       full: !stage.changedOnly,
     }
 
-    for (const verb of stage.verbs) {
+    for (const verb of plan.verbs) {
       // Die Typprüfung braucht immer das ganze Projekt: eine einzelne Datei
       // ohne ihren Kontext zu prüfen erzeugt Fehler, die es gar nicht gibt.
       if (verb === 'types' && enriched.kind === 'js') {
@@ -269,14 +233,15 @@ async function main() {
   let code = 0
   if (steps.length > 0) {
     const results = await runSteps(steps, { quiet: options.quiet, stopOnFail: false })
-    code = summarize(results, { label: `quality ${options.stage} — ${config.level}` })
-  } else if (stage.verbs.length > 0) {
+    const label = options.only ? `quality ${options.stage} --only ${options.only.join(',')}` : `quality ${options.stage}`
+    code = summarize(results, { label: `${label} — ${config.level}` })
+  } else if (plan.verbs.length > 0) {
     process.stdout.write(c.dim('Keine geänderten Dateien in konfigurierten Komponenten — nichts zu prüfen.\n'))
   }
 
   // Der Tamper-Check läuft auch dann, wenn oben schon etwas rot ist: sonst
   // wird ein PR in zwei Runden rot statt in einer.
-  if (stage.tamper) {
+  if (plan.tamper) {
     try {
       const tamperCode = runTamper({
         root: config.root,

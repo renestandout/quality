@@ -1,0 +1,166 @@
+# Quality-Gate für ein Repo, dessen Tests lange laufen (Muster: rankscan/application).
+#
+# Der Unterschied zu ci-monorepo-php-js.yml: Statik und Tests liegen in zwei
+# parallelen Jobs statt in einem. Das lohnt sich, sobald die Suite mehrere
+# Minuten braucht — der Runner läuft mit stopOnFail: false, ein einzelner Job
+# würde also auch bei einem Formatfehler die ganze Suite abwarten, bevor er rot
+# wird, und jeder grüne Lauf dauerte die Summe statt das Maximum.
+#
+# `--only` teilt die Stufe entsprechend auf. Wer keine lange Suite hat, nimmt
+# ci-monorepo-php-js.yml: ein Job ist einfacher.
+#
+# Nach .github/workflows/quality.yml im Projekt kopieren und Versionen,
+# Dienste und Testbefehle anpassen.
+
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Blockierend. Hängt am Diff: derselbe Stand ergibt dasselbe Ergebnis, heute
+  # wie in drei Monaten.
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      # fetch-depth: 0 ist Pflicht — der Tamper-Check vergleicht gegen den
+      # Zielbranch und braucht dessen Vorgeschichte.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Abhängigkeiten
+        run: |
+          composer install --no-interaction --prefer-dist --no-progress
+          npm ci
+
+      # Nur der statische Teil. `test` und `build` bleiben dem tests-Job
+      # überlassen, `tamper` folgt unten als eigener Schritt.
+      - name: Qualitätsprüfungen (statisch)
+        run: vendor/bin/quality task --only fmt,lint,types
+
+      # Eigener Schritt, weil nur ein Pull Request einen Zielbranch hat.
+      # `always()`, damit ein PR in einer Runde alles erfährt statt in zweien.
+      - name: Tamper-Check
+        if: always() && github.event_name == 'pull_request'
+        run: vendor/bin/quality tamper --base origin/${{ github.base_ref }}
+
+  # Ebenfalls blockierend — und deshalb ebenfalls ein Required Check. Steht er
+  # nicht in der Liste, lässt sich mit roten Tests mergen.
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: db_test
+          POSTGRES_USER: db
+          POSTGRES_PASSWORD: db
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd="pg_isready -U db"
+          --health-interval=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Abhängigkeiten
+        run: |
+          composer install --no-interaction --prefer-dist --no-progress
+          npm ci
+
+      # Zwei Aufrufe, und die Reihenfolge ist der Grund: eine Stufe führt ihre
+      # Schritte immer in der eigenen Reihenfolge aus, und dort steht `build`
+      # hinter `test`. Tests brauchen den Build aber oft schon vorher — bei
+      # Laravel/Inertia sucht der Vite-Helper ohne public/build/manifest.json
+      # einen Dev-Server und läuft je Test in einen mehrsekündigen Timeout.
+      # `--only build,test` in einem Aufruf würde genau das falsch herum tun.
+      #
+      # `full`, nicht `task`: nur `full` kennt den Schritt `build`. --only
+      # filtert eine Stufe, es erweitert sie nicht.
+      - name: Build
+        run: vendor/bin/quality full --only build
+
+      - name: Tests
+        run: vendor/bin/quality full --only test
+
+  # Informierend, bewusst KEIN Required Check.
+  #
+  # Diese Prüfungen hängen an der Zeit, nicht am Diff: ein heute
+  # veröffentlichtes CVE oder ein geänderter gitleaks-Regelsatz färbt sie rot,
+  # ohne dass jemand eine Zeile angefasst hat.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Abhängigkeiten
+        run: |
+          composer install --no-interaction --prefer-dist --no-progress
+          npm ci
+
+      - name: Abhängigkeiten auf bekannte Lücken prüfen (PHP)
+        if: always()
+        run: composer audit
+
+      - name: Abhängigkeiten auf bekannte Lücken prüfen (JS)
+        if: always()
+        run: npm audit --audit-level=high
+
+      - name: Secret Scanning
+        if: always()
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
