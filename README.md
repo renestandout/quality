@@ -61,6 +61,34 @@ unterscheiden; `--all` prüft alles, `--files a,b` gibt sie explizit vor.
 Ab `task` wird nur noch geprüft, nicht mehr geschrieben — was in CI rot wird,
 soll dort nicht heimlich repariert werden.
 
+### Eine Stufe aufteilen: `--only`
+
+`--only` sagt, was von einer Stufe übrig bleibt. Erlaubt sind die Schritte
+`fmt`, `lint`, `types`, `test`, `build` — dazu `tamper` für den Nachlauf über
+den Diff.
+
+```bash
+quality task --only fmt,lint,types    # der statische Teil, ohne Tests
+quality full --only test,build        # der lange Teil
+```
+
+Gedacht für Repositories, deren CI Statik und Tests bewusst in **parallele
+Jobs** trennt, damit ein Formatfehler nicht hinter einer langen Suite wartet.
+Der Runner läuft mit `stopOnFail: false` — ein einzelner Job müsste sonst immer
+alles abwarten, bevor er rot wird, und jeder grüne Lauf dauerte die Summe statt
+das Maximum.
+
+Zwei Dinge, die dabei leicht überraschen:
+
+- **`--only` fügt nichts hinzu.** Es filtert die Schritte, die die Stufe ohnehin
+  hätte. `quality fix --only test` läuft nicht, sondern meldet, dass nichts
+  übrig bleibt (Exit 2) — eine Fehlbedienung soll nicht als grüner Lauf enden.
+- **Ohne `tamper` in der Liste läuft der Tamper-Check nicht mit.** Das ist der
+  Normalfall bei der Aufteilung: er gehört in CI als eigener Schritt mit
+  `--base`, weil nur ein Pull Request einen Zielbranch hat.
+
+Beispiel dafür in [`examples/ci-split-static-tests.yml`](examples/ci-split-static-tests.yml).
+
 ## Ein bestehendes Projekt aufnehmen
 
 Das laufende Gate prüft immer nur Diffs. Ein gewachsenes Projekt braucht davor
