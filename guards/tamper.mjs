@@ -49,8 +49,13 @@ export const PROTECTED_PATHS = [
   { pattern: /(^|\/)phpstan\.neon(\.dist)?$/, label: 'PHPStan-Konfiguration' },
   { pattern: /(^|\/)pint\.json$/, label: 'Pint-Konfiguration' },
   { pattern: /(^|\/)\.prettierrc/, label: 'Prettier-Konfiguration' },
-  { pattern: /(^|\/)prettier\.config\.[jt]s$/, label: 'Prettier-Konfiguration' },
-  { pattern: /(^|\/)eslint\.config\.[jt]s$/, label: 'ESLint-Konfiguration' },
+  // [cm]? deckt .mjs/.cjs/.mts/.cts mit ab. Ohne das war die Linter- und
+  // Formatiererkonfiguration in genau den Projekten ungeschützt, die sie am
+  // ehesten so benennen: wer kein "type": "module" im package.json hat, MUSS
+  // .mjs verwenden, sonst lädt die Konfiguration gar nicht. Gefunden am
+  // 16.08.2026 in rankscan/website, wo beide Dateien .mjs heissen.
+  { pattern: /(^|\/)prettier\.config\.[cm]?[jt]s$/, label: 'Prettier-Konfiguration' },
+  { pattern: /(^|\/)eslint\.config\.[cm]?[jt]s$/, label: 'ESLint-Konfiguration' },
   { pattern: /(^|\/)\.oxlintrc\.json$/, label: 'oxlint-Konfiguration' },
   { pattern: /(^|\/)\.claude\/settings\.json$/, label: 'Claude-Hook-Konfiguration' },
 ]

@@ -313,3 +313,39 @@ test('Fremdcode wird nie bewertet, auch wenn er mitcommittet ist', () => {
   ])
   assert.deepEqual(findings, [])
 })
+
+test('Linter-Konfiguration ist auch als .mjs/.cjs geschützt', () => {
+  // Regressionstest zu einer Lücke vom 16.08.2026: die Muster endeten auf
+  // [jt]s und trafen damit weder .mjs noch .cjs. Ausgerechnet Projekte ohne
+  // "type": "module" im package.json MÜSSEN .mjs verwenden — dort war die
+  // Linterkonfiguration also unbemerkt ungeschützt, während pint.json und
+  // phpstan.neon nebenan geschützt waren. Gefunden in rankscan/website.
+  for (const datei of [
+    'eslint.config.js',
+    'eslint.config.ts',
+    'eslint.config.mjs',
+    'eslint.config.cjs',
+    'eslint.config.mts',
+    'eslint.config.cts',
+    'prettier.config.js',
+    'prettier.config.mjs',
+    'prettier.config.cjs',
+    'prettier.config.mts',
+  ]) {
+    const findings = analyseDiff([{ path: datei, added: [{ line: 1, text: '// gelockert' }], deleted: false }])
+    assert.deepEqual(
+      findings.map((f) => f.rule),
+      ['protected.changed'],
+      `${datei} müsste geschützt sein, ist es aber nicht`
+    )
+  }
+})
+
+test('eine gleichnamige Quelldatei ist keine Konfiguration', () => {
+  // Die Erweiterung um [cm]? darf nicht dazu führen, dass alles mit ähnlichem
+  // Namen als Konfiguration gilt.
+  for (const datei of ['src/eslint.config.helper.mjs', 'eslint.configuration.mjs', 'my-eslint.config.mjsx']) {
+    const findings = analyseDiff([{ path: datei, added: [{ line: 1, text: 'const a = 1' }], deleted: false }])
+    assert.deepEqual(findings, [], `${datei} darf nicht als geschützte Konfiguration gelten`)
+  }
+})
