@@ -187,8 +187,25 @@ export function parseDiff(diffText) {
 
 /**
  * Bewertet einen geparsten Diff.
- * `botAuthor` unterdrückt die Lockfile-Regel: ein Renovate-Lauf ändert
- * Lockfiles per Definition und würde sonst jedes Mal rot.
+ *
+ * `botAuthor` unterdrückt zwei Regeln: die Lockfile-Regel — ein Renovate-Lauf
+ * ändert Lockfiles per Definition und würde sonst jedes Mal rot — und seit
+ * v0.1.8 auch `protected.changed`.
+ *
+ * Letzteres, weil Dependabot Action-Versionen in `.github/workflows/**`
+ * anhebt, und das ist ein geschützter Pfad. Ohne die Ausnahme ist JEDER
+ * Actions-PR rot, auch ein reiner Patch-Bump: Dauerröte auf einem Gate, das
+ * genau davon lebt, dass Rot etwas bedeutet.
+ *
+ * Die Abwägung dahinter: wer einem Bot die Lockdatei glaubt, muss ihm die
+ * Versionsreferenz erst recht glauben. Eine Lockdatei kann beliebigen Code
+ * nachziehen — sie ist die grössere Angriffsfläche, nicht die kleinere. Die
+ * Ausnahme hier nicht zu machen, während sie dort gilt, wäre inkonsequent.
+ *
+ * Getragen wird das von `isBotAuthor` (guards/tamper-git.mjs): dort müssen
+ * ALLE Autoren des Diffs Bots sein. Ein einziger menschlicher Commit im
+ * selben PR schaltet beide Regeln wieder scharf — es lässt sich also nichts
+ * in einem Bot-PR mitschmuggeln.
  */
 export function analyseDiff(files, { botAuthor = false, ignorePaths = [] } = {}) {
   const findings = []
@@ -209,7 +226,7 @@ export function analyseDiff(files, { botAuthor = false, ignorePaths = [] } = {})
       continue
     }
 
-    for (const { pattern, label } of PROTECTED_PATHS) {
+    for (const { pattern, label } of botAuthor ? [] : PROTECTED_PATHS) {
       if (pattern.test(file.path)) {
         findings.push({
           rule: 'protected.changed',

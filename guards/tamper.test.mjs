@@ -349,3 +349,37 @@ test('eine gleichnamige Quelldatei ist keine Konfiguration', () => {
     assert.deepEqual(findings, [], `${datei} darf nicht als geschützte Konfiguration gelten`)
   }
 })
+
+test('ein Bot darf Action-Versionen im Workflow anheben', () => {
+  // Dependabot hebt `uses: actions/checkout@v4` auf `@v7` an — und trifft
+  // damit einen geschützten Pfad. Ohne Ausnahme wäre JEDER Actions-PR rot,
+  // auch ein reiner Patch-Bump. Gefunden am 16.08.2026 in rankscan/website,
+  // wo genau das den PR blockierte.
+  const diff = [
+    {
+      path: '.github/workflows/quality.yml',
+      added: [{ line: 12, text: '      - uses: actions/checkout@v7' }],
+      deleted: false,
+    },
+  ]
+  assert.deepEqual(analyseDiff(diff, { botAuthor: true }), [], 'Bot-PR müsste durchgehen')
+  assert.deepEqual(
+    analyseDiff(diff, { botAuthor: false }).map((f) => f.rule),
+    ['protected.changed'],
+    'derselbe Diff von Hand müsste weiterhin melden'
+  )
+})
+
+test('die Bot-Ausnahme gilt nicht für Suppressions und stillgelegte Tests', () => {
+  // Der Schutz vor Gate-Umgehung darf nicht daran hängen, wer den Commit
+  // signiert hat. Nur die maschinellen Versionsbumps sind gemeint.
+  const findings = analyseDiff(
+    [
+      { path: 'src/A.ts', added: [{ line: 3, text: '// @ts-ignore' }], deleted: false },
+      { path: 'tests/AT.php', added: [{ line: 9, text: '$this->markTestSkipped();' }], deleted: false },
+      { path: 'tests/Weg.php', deleted: true, added: [] },
+    ],
+    { botAuthor: true }
+  )
+  assert.deepEqual(findings.map((f) => f.rule).sort(), ['suppression.typescript', 'test.deleted', 'test.skipped'].sort())
+})
