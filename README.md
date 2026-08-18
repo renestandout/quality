@@ -218,6 +218,13 @@ Zwei Dinge sind dabei wesentlich: `fetch-depth: 0` beim Checkout, sonst fehlt
 dem Tamper-Check die Vergleichsbasis; und `if: always()` bei den nachgelagerten
 Schritten, damit ein PR in einer Runde alles erfährt statt in zweien.
 
+Die Vorlagen laufen unverändert auf einem self-hosted Runner — nur `runs-on`
+ändert sich auf `[self-hosted, linux]`. Das kostet null Actions-Minuten, auch
+in privaten Repos. Einrichtung der Runner-VM, Registrierung je Repository und
+die Grenzen (nur private Repos, Ausfall heisst hängend statt rot) stehen in
+[`docs/self-hosted-runner.md`](docs/self-hosted-runner.md); die Skripte liegen
+unter [`runner/`](runner/).
+
 ## Was das Framework NICHT vereinheitlicht
 
 Den **Linter im JS-Stack**: existiert ein `lint`-Skript, wird es aufgerufen.

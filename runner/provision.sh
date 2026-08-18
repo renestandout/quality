@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+#
+# Richtet eine frische Ubuntu-24.04-VM als GitHub-Actions-Runner-Host ein.
+# Einmal als ubuntu-User mit sudo ausführen. Das Skript ist idempotent:
+# ein zweiter Lauf überspringt, was schon da ist.
+#
+# Was danach vorhanden ist:
+#   - 2 GB Swap
+#   - Docker (für services:-Container wie postgres/redis)
+#   - PHP 8.3 und 8.4 CLI mit den Extensions der Quality-Workflows
+#   - composer, git, curl, jq, unzip
+#   - User "runner" (kein sudo, Mitglied der docker-Gruppe)
+#
+# Node fehlt absichtlich: actions/setup-node installiert es je Lauf in den
+# Runner-Tool-Cache und respektiert .nvmrc.
+
+set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then
+  echo "Mit sudo ausführen: sudo $0" >&2
+  exit 1
+fi
+
+echo "==> Swap (2 GB)"
+if ! swapon --show | grep -q /swapfile; then
+  fallocate -l 2G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >>/etc/fstab
+fi
+
+echo "==> Basispakete"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq git curl jq unzip ca-certificates software-properties-common
+
+echo "==> Docker"
+if ! command -v docker >/dev/null; then
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+    >/etc/apt/sources.list.d/docker.list
+  apt-get update -qq
+  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin
+fi
+
+echo "==> PHP 8.3 + 8.4"
+add-apt-repository -y ppa:ondrej/php >/dev/null
+apt-get update -qq
+# Extensions aus den Quality-Workflows (pdo_pgsql steckt im pgsql-Paket).
+# xml und curl dazu: composer und Laravel brauchen beide.
+for v in 8.3 8.4; do
+  apt-get install -y -qq \
+    "php${v}-cli" "php${v}-pgsql" "php${v}-redis" "php${v}-intl" \
+    "php${v}-mbstring" "php${v}-bcmath" "php${v}-zip" "php${v}-gd" \
+    "php${v}-xml" "php${v}-curl"
+done
+update-alternatives --set php /usr/bin/php8.4
+
+echo "==> composer"
+if ! command -v composer >/dev/null; then
+  EXPECTED=$(curl -fsSL https://composer.github.io/installer.sig)
+  curl -fsSL https://getcomposer.org/installer -o /tmp/composer-setup.php
+  echo "${EXPECTED}  /tmp/composer-setup.php" | sha384sum -c - >/dev/null
+  php /tmp/composer-setup.php --quiet --install-dir=/usr/local/bin --filename=composer
+  rm /tmp/composer-setup.php
+fi
+
+echo "==> User runner"
+if ! id runner >/dev/null 2>&1; then
+  useradd --create-home --shell /bin/bash runner
+fi
+usermod -aG docker runner
+
+echo "==> Docker-Aufräum-Cron (wöchentlich)"
+cat >/etc/cron.weekly/docker-prune <<'EOF'
+#!/bin/sh
+docker system prune -af --filter "until=168h" >/dev/null 2>&1
+EOF
+chmod +x /etc/cron.weekly/docker-prune
+
+echo "Fertig. Nächster Schritt: runner/register.sh je Repository."
