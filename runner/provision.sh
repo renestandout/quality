@@ -33,7 +33,9 @@ fi
 echo "==> Basispakete"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq git curl jq unzip ca-certificates software-properties-common
+# shellcheck: auf GitHub-Hosted-Runnern vorinstalliert, hier nicht. Der
+# mautic-Workflow ruft es direkt auf und scheitert sonst am fehlenden Befehl.
+apt-get install -y -qq git curl jq unzip ca-certificates software-properties-common shellcheck
 
 echo "==> Docker"
 if ! command -v docker >/dev/null; then
@@ -74,6 +76,17 @@ if ! id runner >/dev/null 2>&1; then
   useradd --create-home --shell /bin/bash runner
 fi
 usermod -aG docker runner
+
+# Passwortloses sudo ist Voraussetzung, nicht Bequemlichkeit: GitHub-Hosted-
+# Runner geben ihrem Job-User genau das, und Actions verlassen sich darauf.
+# shivammathur/setup-php etwa legt sein Lock-Verzeichnis per sudo an — ohne
+# sudo scheitert es nicht, sondern wartet endlos, und der Job hängt bis zum
+# Timeout. Das kostet nichts an Sicherheit: wer einen PR schreiben kann,
+# führt hier ohnehin eigenen Code aus (Tests, Build, composer-Scripts). Die
+# Schutzgrenze ist, dass nur private Repos ohne Fork-PRs hier laufen.
+echo "runner ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/runner
+chmod 0440 /etc/sudoers.d/runner
+visudo -c -f /etc/sudoers.d/runner >/dev/null
 
 echo "==> Docker-Aufräum-Cron (wöchentlich)"
 cat >/etc/cron.weekly/docker-prune <<'EOF'

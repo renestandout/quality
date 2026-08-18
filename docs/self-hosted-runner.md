@@ -20,8 +20,24 @@ ssh ubuntu@<vm> 'sudo ./provision.sh'
 ```
 
 `provision.sh` installiert: 2 GB Swap, Docker, PHP 8.3+8.4 mit den
-Workflow-Extensions, composer, den unprivilegierten User `runner`.
+Workflow-Extensions, composer, shellcheck, den User `runner`.
 Node installiert `actions/setup-node` je Lauf selbst (respektiert `.nvmrc`).
+
+Zwei Dinge daran sind nicht offensichtlich, beide beim ersten Umzug
+aufgefallen:
+
+**Der `runner`-User bekommt passwortloses sudo.** GitHub-Hosted-Runner geben
+ihrem Job-User genau das, und Actions setzen es voraus. `setup-php` legt sein
+Lock-Verzeichnis per sudo an; fehlt sudo, scheitert es nicht, sondern wartet
+endlos — der Job hängt bis zum Timeout, ohne eine brauchbare Fehlermeldung.
+Sicherheit kostet das nichts: wer einen PR schreiben kann, führt hier ohnehin
+eigenen Code aus (Tests, Build, composer-Scripts). Die Schutzgrenze ist, dass
+nur private Repos ohne Fork-PRs hier laufen.
+
+**shellcheck muss mit.** Auf `ubuntu-latest` ist es vorinstalliert, der
+mautic-Workflow ruft es direkt auf. Es war der eine Befehl, der sonst gefehlt
+hätte — ein guter Anlass, bei neuen Repos zu prüfen, welche Werkzeuge der
+Workflow als vorhanden voraussetzt.
 
 ## Runner registrieren
 
