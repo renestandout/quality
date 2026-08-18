@@ -95,4 +95,21 @@ docker system prune -af --filter "until=168h" >/dev/null 2>&1
 EOF
 chmod +x /etc/cron.weekly/docker-prune
 
+# Verwaiste Service-Container: Bricht ein Job ab, räumt der Runner seine
+# services:-Container nicht immer weg. Auf GitHub-Hosted fällt die ganze VM
+# danach weg, hier bleiben sie laufen — mit belegten Ports, an denen der
+# nächste Lauf schon beim "Initialize containers" scheitert.
+# Stündlich, Grenze 6 h: kein Job dieser Repos läuft länger (Timeout 45 min),
+# und auf dieser VM laufen ausschliesslich Runner-Container.
+cat >/etc/cron.hourly/runner-stale-containers <<'EOF'
+#!/bin/sh
+now=$(date +%s)
+docker ps -q | while read -r id; do
+  started=$(docker inspect -f '{{.State.StartedAt}}' "$id" 2>/dev/null) || continue
+  ts=$(date -d "$started" +%s 2>/dev/null) || continue
+  [ $((now - ts)) -gt 21600 ] && docker rm -f "$id" >/dev/null 2>&1
+done
+EOF
+chmod +x /etc/cron.hourly/runner-stale-containers
+
 echo "Fertig. Nächster Schritt: runner/register.sh je Repository."

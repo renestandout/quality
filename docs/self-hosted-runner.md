@@ -69,6 +69,33 @@ In `.github/workflows/quality.yml` je Job:
 runs-on: [self-hosted, linux]
 ```
 
+**Ausnahme: Jobs mit `services:`.** Feste Host-Ports funktionieren nur,
+solange der Runner-Host nach dem Lauf verschwindet. Hier bleibt er stehen:
+zwei gleichzeitige Läufe streiten sich um denselben Port, und ein
+abgebrochener Lauf hinterlässt einen Container, der ihn blockiert, bis ihn
+jemand entfernt. Der nächste Lauf scheitert dann schon am Schritt
+„Initialize containers" — mit einer Meldung, die nach einem Docker-Problem
+aussieht und keins ist.
+
+Deshalb nur den Container-Port angeben und den zugelosten Host-Port über den
+`job`-Kontext holen:
+
+```yaml
+    services:
+      postgres:
+        image: postgres:17
+        ports: [5432]          # kein 5432:5432
+
+    steps:
+      - name: Tests
+        env:
+          DB_PORT: ${{ job.services.postgres.ports['5432'] }}
+        run: vendor/bin/quality full --only test
+```
+
+Der `job`-Kontext ist auf Job-Ebene **nicht** verfügbar — die Portvariable
+gehört ins `env:` des Schritts, nicht in das des Jobs.
+
 Sonst nichts. `shivammathur/setup-php` findet die vorinstallierten
 PHP-Versionen, `actions/setup-node` nutzt den Tool-Cache der VM, und
 composer-/npm-Caches bleiben zwischen Läufen liegen — die Läufe werden
