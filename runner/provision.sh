@@ -62,6 +62,23 @@ for v in 8.3 8.4; do
 done
 update-alternatives --set php /usr/bin/php8.4
 
+echo "==> PostgreSQL-Client 17 + redis-tools"
+# Auch das ist auf ubuntu-latest vorinstalliert: Laravel lädt den
+# Schema-Dump (database/schema/*.sql) über psql statt über Migrationen.
+# Fehlt psql, scheitert jeder Test, der eine Datenbank anfasst — mit
+# "sh: 1: psql: not found" tief in einer ProcessFailedException.
+# Aus dem PGDG-Repo, damit der Client zur Server-Version 17 passt.
+if ! command -v psql >/dev/null; then
+  install -d /usr/share/postgresql-common/pgdg
+  curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    https://www.postgresql.org/media/keys/ACCC4CF8.asc
+  echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+https://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo "$VERSION_CODENAME")-pgdg main" \
+    >/etc/apt/sources.list.d/pgdg.list
+  apt-get update -qq
+fi
+apt-get install -y -qq postgresql-client-17 redis-tools
+
 echo "==> composer"
 if ! command -v composer >/dev/null; then
   EXPECTED=$(curl -fsSL https://composer.github.io/installer.sig)

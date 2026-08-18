@@ -8,15 +8,21 @@ Checks und Tamper-Check bleiben unverändert — nur `runs-on` ändert sich.
 
 ## Die VM
 
-AWS Lightsail `ci-runner`, eu-central-1, Ubuntu 24.04, 4 GB RAM / 2 vCPU /
-80 GB SSD (~24 USD/Mt.). Der Runner pollt GitHub über ausgehendes HTTPS.
-Eingehend ist nur SSH (Port 22) offen.
+AWS Lightsail `quality-runner`, eu-central-1a, Ubuntu 24.04, 4 GB RAM /
+2 vCPU / 80 GB SSD (~24 USD/Mt.). Statische IP **63.187.176.18**,
+SSH-Key `~/.ssh/ci-runner.pem`, User `ubuntu`. Der Runner pollt GitHub über
+ausgehendes HTTPS; eingehend ist nur SSH (Port 22) offen.
+
+Die statische IP ist für den Betrieb nicht nötig — nur für uns: Lightsail
+vergibt beim Stoppen und Starten sonst eine neue Adresse, und nach einem
+Resize stimmt kein Skript mehr. Angebunden an eine laufende Instanz kostet
+sie nichts.
 
 Einrichtung (einmalig):
 
 ```bash
-scp runner/provision.sh runner/register.sh ubuntu@<vm>:
-ssh ubuntu@<vm> 'sudo ./provision.sh'
+scp -i ~/.ssh/ci-runner.pem runner/provision.sh runner/register.sh ubuntu@<vm>:
+ssh -i ~/.ssh/ci-runner.pem ubuntu@<vm> 'sudo ./provision.sh'
 ```
 
 `provision.sh` installiert: 2 GB Swap, Docker, PHP 8.3+8.4 mit den
