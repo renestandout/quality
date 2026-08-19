@@ -6,23 +6,85 @@ GitHub-Actions-Minuten (Messung in
 kosten bei GitHub null Minuten, auch in privaten Repos. Workflows, Required
 Checks und Tamper-Check bleiben unverändert — nur `runs-on` ändert sich.
 
+## Warum die VM nicht bei AWS steht
+
+Die erste Runner-VM war eine Lightsail-Instanz. Sie lief, aber siebenmal
+langsamer als nötig — der Grund steht im nächsten Abschnitt und ist die
+wichtigste Lehre dieses Setups. Seit dem 19.08.2026 läuft der Runner
+deshalb bei Hetzner.
+
+Zwei Fallen bei der Typauswahl, beide selbst erlebt:
+
+**Preise gelten je Standort.** `cpx31` kostet in Falkenstein 17,49 EUR und
+in Ashburn 62,49 EUR — dasselbe Produkt, mehr als das Dreifache. Wer den
+Preis für einen Standort abfragt und am anderen bucht, zahlt drauf. Immer
+`hcloud server-type describe <typ> -o json | jq '.prices[]'` lesen, nicht
+nur den ersten Wert.
+
+**Verfügbarkeit ist nicht Preisliste.** Die ARM-Typen (`cax*`) sind mit
+10,49 EUR für 4 Kerne konkurrenzlos, waren aber in allen drei EU-Standorten
+ausverkauft. `hcloud server-type describe <typ>` zeigt je Standort
+`Available: yes|no`; die Preisliste zeigt alle Standorte unabhängig davon.
+Wird ARM wieder frei, lohnt der Wechsel — dann müssen die Workflows ihre
+`linux_x64`-Downloads (gitleaks, shfmt) architekturabhängig machen.
+
+## Warum nicht Lightsail: burstbare CPU
+
+Der Abschnitt beschreibt die verworfene erste Wahl. Er steht hier, weil der
+Fehler von aussen unsichtbar ist — die Instanz lief, nichts war rot, alles
+dauerte nur ein Vielfaches.
+
+Alle Lightsail-Bundles der `*_3_0`-Familie sind **burstbar**. Sie liefern die
+nominelle Leistung nur, solange Burst-Guthaben da ist; danach deckelt AWS
+hart auf eine Baseline. Für `medium_3_0` sind das **20 % von 2 vCPU**, also
+0,4 vCPU dauerhaft.
+
+CI ist dafür das ungünstigste Lastprofil überhaupt: Volllast in Schüben,
+minutenlang. Gemessen am 18.08.2026 mit rankscan:
+
+| | mit Burst-Guthaben | ohne (Dauerzustand) |
+|---|---|---|
+| `quality` | 6:38 | 11:52 |
+| `tests` (5300 Tests) | — | 33:32 |
+| Lauf gesamt, seriell | — | **48 min** |
+
+`BurstCapacityPercentage` lag danach bei 0,0005 %, `CPUUtilization`
+konstant bei exakt 20,00 % — die Drosselung ist im Graphen als gerade Linie
+sichtbar. Prüfen lässt sie sich jederzeit:
+
+```bash
+aws lightsail get-instance-metric-data --region eu-central-1 \
+  --instance-name quality-runner --metric-name BurstCapacityPercentage \
+  --period 300 --start-time <von> --end-time <bis> \
+  --unit Percent --statistics Average
+```
+
+**Konsequenz:** Lightsail ist für CI die falsche Familie, und Hochstufen
+hilft kaum — `xlarge_3_0` kostet 84 USD/Mt. und liefert mit 40 % Baseline
+gerade 1,6 vCPU. Deshalb der Wechsel zu Hetzner: weniger Geld, ungedrosselte
+Kerne.
+
+Die Lehre gilt über AWS hinaus: Wer eine VM für CI aussucht, muss wissen, ob
+ihre CPU garantiert oder burstbar ist. Steht es nicht im Datenblatt, ist es
+burstbar.
+
 ## Die VM
 
-AWS Lightsail `quality-runner`, eu-central-1a, Ubuntu 24.04, 4 GB RAM /
-2 vCPU / 80 GB SSD (~24 USD/Mt.). Statische IP **63.187.176.18**,
-SSH-Key `~/.ssh/ci-runner.pem`, User `ubuntu`. Der Runner pollt GitHub über
-ausgehendes HTTPS; eingehend ist nur SSH (Port 22) offen.
+Hetzner Cloud `quality-runner`, Falkenstein (fsn1), Ubuntu 24.04,
+Typ `cpx22` — 2 vCPU / 4 GB / 80 GB, 19,49 EUR/Mt. IP **178.105.222.60**,
+User `root`, Key `~/.ssh/id_ed25519`. Firewall `runner-ssh-only` lässt nur
+Port 22 herein; der Runner selbst pollt GitHub über ausgehendes HTTPS und
+braucht keinen offenen Port.
 
-Die statische IP ist für den Betrieb nicht nötig — nur für uns: Lightsail
-vergibt beim Stoppen und Starten sonst eine neue Adresse, und nach einem
-Resize stimmt kein Skript mehr. Angebunden an eine laufende Instanz kostet
-sie nichts.
+Verwaltung über `hcloud` (Kontext `standout-ci`). Der API-Token braucht
+**Read & Write** — mit einem Lesetoken schlägt jedes Anlegen mit
+„permission denied (forbidden)" fehl, während Abfragen weiter funktionieren.
 
 Einrichtung (einmalig):
 
 ```bash
-scp -i ~/.ssh/ci-runner.pem runner/provision.sh runner/register.sh ubuntu@<vm>:
-ssh -i ~/.ssh/ci-runner.pem ubuntu@<vm> 'sudo ./provision.sh'
+scp runner/provision.sh runner/register.sh root@<vm>:
+ssh root@<vm> 'bash provision.sh'
 ```
 
 `provision.sh` installiert: 2 GB Swap, Docker, PHP 8.3+8.4 mit den
@@ -52,16 +114,28 @@ jede Runner-Instanz gehört zu genau einem Repository. Verteilung:
 
 | Repository | Instanzen | Grund |
 |---|---|---|
-| renestandout/rankscan | 2 | `quality` + `tests` laufen parallel |
+| renestandout/rankscan | 1 | siehe unten — parallel ist hier langsamer |
 | renestandout/adboard | 1 | zwei kurze Jobs |
 | renestandout/rankscanpage | 1 | zwei kurze Jobs |
 | renestandout/rankscanmautic | 1 | shellcheck + gitleaks, Sekunden |
+
+**Eine Instanz je Repo, nicht zwei.** Der naheliegende Gedanke ist, mehrere
+Runner zu registrieren, damit die Jobs eines Laufs parallel starten. Gemessen
+am 18.08.2026 mit rankscan auf zwei Kernen: `quality` braucht allein 6:38 und
+neben laufenden Tests über 30 Minuten — Faktor fünf, nicht Faktor zwei. Beide
+Jobs sind CPU-gebunden, bremsen sich gegenseitig aus und drücken zusätzlich
+in den Swap. Seriell auf der vollen Maschine ist die Gesamtzeit kürzer, jeder
+Job bleibt in seinem Timeout, und die Läufe werden vorhersagbar.
+
+Mehr Parallelität lohnt erst mit mehr Kernen. Bei Lightsail hiesse das
+`xlarge_3_0` (4 vCPU, 84 USD/Mt.) — mehr als die Actions-Rechnung, die wir
+loswerden wollten.
 
 Je Instanz, vom Arbeitsrechner aus:
 
 ```bash
 TOKEN=$(gh api -X POST repos/<owner/repo>/actions/runners/registration-token -q .token)
-ssh ubuntu@<vm> "sudo RUNNER_TOKEN=$TOKEN ./register.sh <owner/repo> <nr>"
+ssh root@<vm> "RUNNER_TOKEN=$TOKEN bash register.sh <owner/repo> <nr>"
 ```
 
 Das Token gilt 1 Stunde und nur für die Registrierung. Danach hält der
