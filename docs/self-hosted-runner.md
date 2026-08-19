@@ -163,7 +163,33 @@ In `.github/workflows/quality.yml` je Job:
 runs-on: [self-hosted, linux]
 ```
 
-**Ausnahme: Jobs mit `services:`.** Feste Host-Ports funktionieren nur,
+**Ausnahme 1: `setup-php` muss raus.** Die Action stellt die PHP-Version per
+`update-alternatives` **systemweit** um. Auf einem geteilten Host gewinnt bei
+gleichzeitigen Jobs die zuletzt gesetzte Version — und zwar über
+Repository-Grenzen hinweg: am 19.08.2026 lief adboards `artisan test` unter
+PHP 8.3, weil rankscan/website im selben Moment einen 8.3-Job fuhr. Die
+Meldung lautete „Your Composer dependencies require a PHP version >= 8.4.1"
+und sah nach einem Composer-Problem aus.
+
+Stattdessen einen job-lokalen Symlink in `$RUNNER_TEMP` (je Job eigen):
+
+```yaml
+      - name: PHP 8.4 in den PATH
+        run: |
+          mkdir -p "$RUNNER_TEMP/php-bin"
+          ln -sf /usr/bin/php8.4 "$RUNNER_TEMP/php-bin/php"
+          echo "$RUNNER_TEMP/php-bin" >> "$GITHUB_PATH"
+```
+
+Die Versionen samt Extensions liegen auf der VM (`provision.sh`). Nebeneffekt:
+der Setup-Schritt entfällt, das spart je Job rund eine halbe Minute. Für einen
+Rückweg auf `ubuntu-latest` muss `setup-php` wieder hinein — dort gibt es kein
+`/usr/bin/php8.4`.
+
+Dieselbe Vorsicht gilt für jede Action, die Systemzustand ändert statt nur den
+Job-Workspace: auf einem Wegwerf-Runner ist das folgenlos, hier nicht.
+
+**Ausnahme 2: Jobs mit `services:`.** Feste Host-Ports funktionieren nur,
 solange der Runner-Host nach dem Lauf verschwindet. Hier bleibt er stehen:
 zwei gleichzeitige Läufe streiten sich um denselben Port, und ein
 abgebrochener Lauf hinterlässt einen Container, der ihn blockiert, bis ihn
