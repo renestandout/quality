@@ -216,6 +216,19 @@ Deshalb nur den Container-Port angeben und den zugelosten Host-Port über den
 Der `job`-Kontext ist auf Job-Ebene **nicht** verfügbar — die Portvariable
 gehört ins `env:` des Schritts, nicht in das des Jobs.
 
+**Ausnahme 3: ein gesetztes `tmpDir` in `phpstan.neon` gehört raus.** Projekte,
+die auf `ubuntu-latest` liefen, haben es oft gesetzt, um den PHPStan-Cache über
+`actions/cache` zu retten — auf einem Wegwerf-Runner ist der System-Temp bei
+jedem Lauf leer. Hier ist er es nicht: `/tmp/phpstan` überlebt und ist ab dem
+zweiten Lauf warm. Ein projektlokales `tmpDir` verhindert genau das, weil der
+Arbeitsbaum je Lauf frisch ausgecheckt wird — der Cache landet dann in einem
+Verzeichnis, das es vorher nicht gab.
+
+Gemessen in rankscan/application am 19.08.2026, nachdem `tmpDir:
+storage/phpstan` entfernt wurde: PHPStan 86s kalt, **6s warm**; der ganze
+`quality`-Job fiel von 4:07 auf 1:01. Das war der Schritt, den die Umstellung
+dort zunächst übersprungen hatte.
+
 Sonst nichts. `shivammathur/setup-php` findet die vorinstallierten
 PHP-Versionen, `actions/setup-node` nutzt den Tool-Cache der VM, und
 composer-/npm-Caches bleiben zwischen Läufen liegen — die Läufe werden

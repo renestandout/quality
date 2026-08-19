@@ -218,6 +218,14 @@ Zwei Dinge sind dabei wesentlich: `fetch-depth: 0` beim Checkout, sonst fehlt
 dem Tamper-Check die Vergleichsbasis; und `if: always()` bei den nachgelagerten
 Schritten, damit ein PR in einer Runde alles erfährt statt in zweien.
 
+Ein Punkt hängt am Runner-Typ statt am YAML: **PHPStans Cache liegt im
+System-Temp** (`/tmp/phpstan`). Auf `ubuntu-latest` ist der bei jedem Lauf leer,
+die Analyse läuft also immer kalt — in rankscan/application 86s statt 6s. Dort
+lohnt `actions/cache` auf diesen Pfad; der Block steht auskommentiert in beiden
+Vorlagen. Auf einem self-hosted Runner ist er überflüssig, und ein
+projektlokales `tmpDir` in `phpstan.neon` verhindert den warmen Cache sogar —
+beim Wechsel gehört es entfernt.
+
 Die Vorlagen laufen unverändert auf einem self-hosted Runner — nur `runs-on`
 ändert sich auf `[self-hosted, linux]`. Das kostet null Actions-Minuten, auch
 in privaten Repos. Einrichtung der Runner-VM, Registrierung je Repository und
