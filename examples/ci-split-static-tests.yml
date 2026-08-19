@@ -49,7 +49,21 @@ jobs:
           node-version: '24'
           cache: npm
 
+      # COMPOSER_AUTH hebt das GitHub-API-Limit an. Ohne Token gelten 60 Anfragen
+      # pro Stunde und IP; Composer laedt dist-Archive ueber die API und meldet
+      # den Fehlschlag als "Could not authenticate against github.com" — das
+      # sieht nach einem Rechteproblem aus und ist keins, auch oeffentliche
+      # Pakete trifft es. Auf einem geteilten self-hosted Runner ist das Limit
+      # schnell erreicht, und es faellt erst auf, wenn eine Version NEU geladen
+      # werden muss: was im Cache liegt, braucht keinen API-Aufruf. Genau so ist
+      # es am 19.08.2026 in allen drei Konsumenten gleichzeitig passiert, beim
+      # Sprung auf standout/quality v0.2.0.
+      #
+      # Job-lokal per env, nicht `composer config --global`: auf einem geteilten
+      # Runner-Host wuerde eine globale auth.json andere Repositories treffen.
       - name: Abhängigkeiten
+        env:
+          COMPOSER_AUTH: '{"github-oauth":{"github.com":"${{ secrets.GITHUB_TOKEN }}"}}'
         run: |
           composer install --no-interaction --prefer-dist --no-progress
           npm ci
@@ -117,7 +131,21 @@ jobs:
           node-version: '24'
           cache: npm
 
+      # COMPOSER_AUTH hebt das GitHub-API-Limit an. Ohne Token gelten 60 Anfragen
+      # pro Stunde und IP; Composer laedt dist-Archive ueber die API und meldet
+      # den Fehlschlag als "Could not authenticate against github.com" — das
+      # sieht nach einem Rechteproblem aus und ist keins, auch oeffentliche
+      # Pakete trifft es. Auf einem geteilten self-hosted Runner ist das Limit
+      # schnell erreicht, und es faellt erst auf, wenn eine Version NEU geladen
+      # werden muss: was im Cache liegt, braucht keinen API-Aufruf. Genau so ist
+      # es am 19.08.2026 in allen drei Konsumenten gleichzeitig passiert, beim
+      # Sprung auf standout/quality v0.2.0.
+      #
+      # Job-lokal per env, nicht `composer config --global`: auf einem geteilten
+      # Runner-Host wuerde eine globale auth.json andere Repositories treffen.
       - name: Abhängigkeiten
+        env:
+          COMPOSER_AUTH: '{"github-oauth":{"github.com":"${{ secrets.GITHUB_TOKEN }}"}}'
         run: |
           composer install --no-interaction --prefer-dist --no-progress
           npm ci
@@ -164,7 +192,21 @@ jobs:
           node-version: '24'
           cache: npm
 
+      # COMPOSER_AUTH hebt das GitHub-API-Limit an. Ohne Token gelten 60 Anfragen
+      # pro Stunde und IP; Composer laedt dist-Archive ueber die API und meldet
+      # den Fehlschlag als "Could not authenticate against github.com" — das
+      # sieht nach einem Rechteproblem aus und ist keins, auch oeffentliche
+      # Pakete trifft es. Auf einem geteilten self-hosted Runner ist das Limit
+      # schnell erreicht, und es faellt erst auf, wenn eine Version NEU geladen
+      # werden muss: was im Cache liegt, braucht keinen API-Aufruf. Genau so ist
+      # es am 19.08.2026 in allen drei Konsumenten gleichzeitig passiert, beim
+      # Sprung auf standout/quality v0.2.0.
+      #
+      # Job-lokal per env, nicht `composer config --global`: auf einem geteilten
+      # Runner-Host wuerde eine globale auth.json andere Repositories treffen.
       - name: Abhängigkeiten
+        env:
+          COMPOSER_AUTH: '{"github-oauth":{"github.com":"${{ secrets.GITHUB_TOKEN }}"}}'
         run: |
           composer install --no-interaction --prefer-dist --no-progress
           npm ci
