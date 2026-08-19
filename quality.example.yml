@@ -7,6 +7,12 @@ level: standard
 # true: vorhandene Fehler sind eingefroren, geprüft wird nur neuer Code.
 baseline: false
 
+# Optional: Konfigurationen, die dieses Projekt bewusst selbst führt. Nur diese
+# drei Schlüssel, nur der Wert "own". Ohne Eintrag meldet "quality audit", wenn
+# die Basiskonfiguration des Pakets nicht eingebunden ist.
+# configs:
+#   prettier: own
+
 components:
   # Einzelne Anwendung in der Repo-Wurzel:
   - { path: ".", stack: laravel, php: "8.3", phpstan_level: 5 }

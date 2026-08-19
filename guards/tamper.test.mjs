@@ -292,6 +292,14 @@ diff --git a/composer.lock b/composer.lock
  {
 +  "x": 1
 `,
+    `
+diff --git a/.prettierignore b/.prettierignore
+--- a/.prettierignore
++++ b/.prettierignore
+@@ -1,1 +1,2 @@
+ /dist
++/src/legacy
+`,
   ]
   for (const p of proben) for (const f of check(p)) erzeugt.add(f.rule)
   for (const rule of SOFT_LOCALLY) {
@@ -382,4 +390,154 @@ test('die Bot-Ausnahme gilt nicht für Suppressions und stillgelegte Tests', () 
     { botAuthor: true }
   )
   assert.deepEqual(findings.map((f) => f.rule).sort(), ['suppression.typescript', 'test.deleted', 'test.skipped'].sort())
+})
+
+test('hinzugefügte Ignore-Zeile in .prettierignore wird gemeldet', () => {
+  const findings = check(`
+diff --git a/.prettierignore b/.prettierignore
+--- a/.prettierignore
++++ b/.prettierignore
+@@ -1,2 +1,3 @@
+ /dist
++/src/legacy
+ /coverage
+`)
+  assert.deepEqual(rules(findings), ['ignore.extended'])
+  assert.equal(findings[0].line, 2)
+})
+
+test('eine Negation in einer Ignore-Datei nimmt Code AUF und ist kein Fund', () => {
+  // `!/vite.config.ts` neben einer Positivliste erweitert die Prüfung — das ist
+  // das Gegenteil einer Umgehung.
+  const findings = check(`
+diff --git a/.prettierignore b/.prettierignore
+--- a/.prettierignore
++++ b/.prettierignore
+@@ -1,2 +1,4 @@
+ /*
+ !/resources
++!/vite.config.ts
++# die Wurzelkonfigurationen gehören ins Gate
+`)
+  assert.deepEqual(rules(findings), [])
+})
+
+test('Ignore-Regeln greifen auch für .eslintignore', () => {
+  const findings = check(`
+diff --git a/frontend/.eslintignore b/frontend/.eslintignore
+--- a/frontend/.eslintignore
++++ b/frontend/.eslintignore
+@@ -1 +1,2 @@
+ build
++src/generated
+`)
+  assert.deepEqual(rules(findings), ['ignore.extended'])
+})
+
+test('die Ignore-Regel ist lokal weich und in CI bindend', () => {
+  // Onboarding legt diese Dateien an; lokal gibt es noch keinen Commit und
+  // damit keinen Trailer, mit dem sich das durchwinken liesse.
+  assert.ok(SOFT_LOCALLY.has('ignore.extended'))
+})
+
+test('Ignore-Dateien stehen NICHT unter den geschützten Pfaden', () => {
+  // Dieselbe Liste ist die Blockliste des PreToolUse-Hooks. Eine Positivliste
+  // wie die von rankscan/application wird legitim erweitert; ein Hook, der das
+  // blockt, hält die Arbeit auf.
+  const findings = check(`
+diff --git a/.prettierignore b/.prettierignore
+--- a/.prettierignore
++++ b/.prettierignore
+@@ -1 +1,2 @@
+ /dist
++/src/legacy
+`)
+  assert.ok(!rules(findings).includes('protected.changed'))
+})
+
+test('parseDiff sammelt entfernte Zeilen, ohne die Kopfzeile mitzuzählen', () => {
+  // "--- a/pfad" beginnt mit einem Minus und ist keine entfernte Zeile.
+  const files = diff(`
+diff --git a/tests/a.test.mjs b/tests/a.test.mjs
+--- a/tests/a.test.mjs
++++ b/tests/a.test.mjs
+@@ -1,3 +1,2 @@
+ const x = 1
+-assert.equal(x, 1)
+ const y = 2
+`)
+  assert.deepEqual(
+    files[0].removed.map((r) => r.text),
+    ['assert.equal(x, 1)']
+  )
+})
+
+test('netto entfernte Assertions in einer bleibenden Testdatei werden gemeldet', () => {
+  // Die Umgehung, die dieser Regel zugrunde liegt: einen roten Test grün
+  // machen, indem man entfernt, was er prüft.
+  const findings = check(`
+diff --git a/tests/Feature/PaymentTest.php b/tests/Feature/PaymentTest.php
+--- a/tests/Feature/PaymentTest.php
++++ b/tests/Feature/PaymentTest.php
+@@ -10,5 +10,3 @@
+         $response = $this->post('/pay');
+-        $response->assertStatus(200);
+-        $this->assertDatabaseHas('payments', ['amount' => 100]);
+     }
+`)
+  assert.deepEqual(rules(findings), ['test.assertions-removed'])
+  assert.match(findings[0].detail, /2/)
+})
+
+test('umgeschriebene Assertions sind kein Fund', () => {
+  // Gleich viele raus wie rein: eine Umformulierung, keine Entfernung.
+  const findings = check(`
+diff --git a/tests/Feature/PaymentTest.php b/tests/Feature/PaymentTest.php
+--- a/tests/Feature/PaymentTest.php
++++ b/tests/Feature/PaymentTest.php
+@@ -10,4 +10,4 @@
+-        $response->assertStatus(200);
++        $response->assertOk();
+`)
+  assert.deepEqual(rules(findings), [])
+})
+
+test('mehr Assertions als vorher ist kein Fund', () => {
+  const findings = check(`
+diff --git a/tests/a.test.mjs b/tests/a.test.mjs
+--- a/tests/a.test.mjs
++++ b/tests/a.test.mjs
+@@ -1,2 +1,3 @@
+-assert.equal(a, 1)
++assert.equal(a, 1)
++expect(b).toBe(2)
+`)
+  assert.deepEqual(rules(findings), [])
+})
+
+test('entfernte Assertions im Produktivcode sind kein Fund', () => {
+  // Ein assert() in einer Bibliothek ist gewöhnlicher Code.
+  const findings = check(`
+diff --git a/src/guard.ts b/src/guard.ts
+--- a/src/guard.ts
++++ b/src/guard.ts
+@@ -1,2 +1,1 @@
+-assert(value !== null)
+ return value
+`)
+  assert.deepEqual(rules(findings), [])
+})
+
+test('eine gelöschte Testdatei meldet nur die Löschung', () => {
+  // Sonst stünde derselbe Vorgang zweimal im Bericht.
+  const findings = check(`
+diff --git a/tests/a.test.mjs b/tests/a.test.mjs
+deleted file mode 100644
+--- a/tests/a.test.mjs
++++ /dev/null
+@@ -1,2 +0,0 @@
+-assert.equal(a, 1)
+-assert.equal(b, 2)
+`)
+  assert.deepEqual(rules(findings), ['test.deleted'])
 })

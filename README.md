@@ -41,6 +41,26 @@ components:
 
 Bekannte Stacks: `laravel`, `php`, `react-ts`, `next-ts`, `node-ts`.
 
+Optional kommt ein `configs:`-Block dazu. Er beantwortet genau eine Frage: für
+welche Konfiguration ist es Absicht, dass das Projekt eine eigene führt statt
+der des Pakets.
+
+```yaml
+configs:
+  prettier: own        # begründet eigener Formatierungsstil
+  # phpstan: own
+  # tsconfig: own
+```
+
+`quality audit` prüft nämlich seit v0.2.0, ob die Konfigurationen des Pakets
+überhaupt eingebunden sind — `phpstan.neon` per `includes:`, Prettier und
+tsconfig per `@standout/quality/…`. Anlass war rankscan/application: das Projekt
+führte das Gate ein, behielt seine bestehende `phpstan.neon` und band die
+Paket-Basis nie ein. `quality init` sagte dazu nur „existiert bereits", also
+liefen vier Wochen lang andere Regeln als gedacht. Wer bewusst abweicht, trägt
+das hier ein — der Hinweis verschwindet dann dauerhaft, statt bei jedem Audit
+erneut überlesen zu werden.
+
 Das PHPStan-Level steht bewusst bei der Komponente und nicht im Profil. Würde
 `strict` fix Level 8 bedeuten, startete ein gewachsenes Projekt mit vierstelligen
 Baselines — eine Zahl, die niemand mehr abträgt. Das Profil bestimmt die
@@ -145,6 +165,18 @@ Er meldet neu hinzugefügte Suppressions (`@ts-ignore`, `@phpstan-ignore`,
 Testdateien, Änderungen an Baselines, Gate- und CI-Konfiguration sowie
 Lockfile-Änderungen. Test-Muster werden nur in Testdateien gesucht — eine
 Funktion namens `skip()` im Produktivcode ist gewöhnlicher Code.
+
+Seit v0.2.0 zusätzlich zwei Dinge, die keine hinzugefügte Codezeile hinterlassen:
+
+- **Netto entfernte Assertions** in einer Testdatei, die bleibt. Ein roter Test
+  lässt sich grün machen, indem man entfernt, was er prüft — und das sieht im
+  Diff nach Aufräumen aus. Gezählt wird je Datei die Differenz, ein
+  Umformulieren ist deshalb kein Fund.
+- **Erweiterte Prüf-Ausnahmen** in `.prettierignore` und `.eslintignore`. Eine
+  Zeile dort nimmt Code aus der Prüfung, ohne im Code selbst eine Spur zu
+  lassen. Ein `!`-Eintrag nimmt Code wieder auf und zählt nicht. Diese Dateien
+  stehen bewusst NICHT unter den geschützten Pfaden: dieselbe Liste ist die
+  Blockliste des PreToolUse-Hooks, und eine Positivliste wird legitim erweitert.
 
 Lokal (`quality tamper`) wird der uncommittete Stand geprüft, inklusive noch
 nicht erfasster Dateien. In CI vergleicht `--base origin/main` gegen den
