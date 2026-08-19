@@ -229,6 +229,29 @@ storage/phpstan` entfernt wurde: PHPStan 86s kalt, **6s warm**; der ganze
 `quality`-Job fiel von 4:07 auf 1:01. Das war der Schritt, den die Umstellung
 dort zunächst übersprungen hatte.
 
+**Ausnahme 4: `COMPOSER_AUTH` gehoert an jeden `composer install`.** Ohne Token
+erlaubt die GitHub-API 60 Anfragen pro Stunde und IP. Composer laedt dist-Archive
+darueber, und auf einem Host, den mehrere Repositories teilen, ist das Limit
+schnell erreicht. Der Fehler lautet dann „Could not authenticate against
+github.com" und sieht nach einem Rechteproblem aus — er trifft auch oeffentliche
+Pakete.
+
+Tueckisch ist der Zeitpunkt: was im Composer-Cache des Runners liegt, braucht
+keinen API-Aufruf. Auffallen kann das deshalb erst, wenn eine Abhaengigkeit in
+einer NEUEN Version gezogen wird — am 19.08.2026 in allen drei Konsumenten
+gleichzeitig, beim Sprung auf `standout/quality` v0.2.0.
+
+```yaml
+      - name: Abhängigkeiten (PHP)
+        env:
+          COMPOSER_AUTH: '{"github-oauth":{"github.com":"${{ secrets.GITHUB_TOKEN }}"}}'
+        run: composer install --no-interaction --prefer-dist --no-progress
+```
+
+`secrets.GITHUB_TOKEN` genuegt: das Limit steigt damit auf 1000 Anfragen pro
+Stunde. Job-lokal statt `composer config --global` — eine globale `auth.json`
+waere wieder ein Eingriff in den geteilten Host, genau wie `setup-php`.
+
 Sonst nichts. `shivammathur/setup-php` findet die vorinstallierten
 PHP-Versionen, `actions/setup-node` nutzt den Tool-Cache der VM, und
 composer-/npm-Caches bleiben zwischen Läufen liegen — die Läufe werden
