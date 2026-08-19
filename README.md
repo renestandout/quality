@@ -54,7 +54,8 @@ configs:
 
 `quality audit` prüft nämlich seit v0.2.0, ob die Konfigurationen des Pakets
 überhaupt eingebunden sind — `phpstan.neon` per `includes:`, Prettier und
-tsconfig per `@standout/quality/…`. Anlass war rankscan/application: das Projekt
+tsconfig per `@standout/quality/…` oder per Pfad auf die Composer-Installation
+(`vendor/standout/quality/configs/…`, für Projekte ohne npm-Abhängigkeit). Anlass war rankscan/application: das Projekt
 führte das Gate ein, behielt seine bestehende `phpstan.neon` und band die
 Paket-Basis nie ein. `quality init` sagte dazu nur „existiert bereits", also
 liefen vier Wochen lang andere Regeln als gedacht. Wer bewusst abweicht, trägt
