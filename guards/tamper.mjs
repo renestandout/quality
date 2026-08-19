@@ -21,7 +21,19 @@ export const EXCEPTION_TRAILER = 'Quality-Exception:'
  * keinen Commit und damit keinen Trailer, mit dem man das durchwinken könnte —
  * ein Projekt käme sonst gar nicht erst durch sein eigenes Onboarding.
  */
-export const SOFT_LOCALLY = new Set(['protected.changed', 'dependency.changed'])
+export const SOFT_LOCALLY = new Set(['protected.changed', 'dependency.changed', 'ignore.extended'])
+
+/**
+ * Ignore-Dateien von Formatierer und Linter. Eine hinzugefügte Zeile darin nimmt
+ * Code aus der Prüfung — dieselbe Wirkung wie eine Suppression, nur eine Ebene
+ * höher und ohne Fundstelle im Code selbst.
+ *
+ * Bewusst NICHT in PROTECTED_PATHS: diese Liste ist gleichzeitig die Blockliste
+ * des PreToolUse-Hooks. Eine Positivliste wie die von rankscan/application
+ * (`/*` plus `!/resources`) wird legitim erweitert, um Dateien AUFzunehmen; ein
+ * Hook, der das blockt, hält die Arbeit auf, ohne etwas zu schützen.
+ */
+const IGNORE_FILE = /(^|\/)\.(prettier|eslint)ignore$/
 
 /** Dateien, in denen Test-Muster überhaupt geprüft werden. */
 const TEST_FILE = /(^|\/)(tests?|__tests__|spec)\//i
@@ -135,7 +147,24 @@ export const LINE_RULES = [
 ]
 
 /**
- * Zerlegt einen unified diff in {path, added: [{line, text}], deleted, renamed}.
+ * Muster in ENTFERNTEN Zeilen.
+ *
+ * Anders bewertet als hinzugefügte: eine einzelne entfernte Zeile sagt nichts —
+ * Testcode wird ständig umformuliert. Gezählt wird deshalb netto je Datei, und
+ * gemeldet nur, wenn mehr passende Zeilen verschwinden als dazukommen.
+ */
+export const REMOVED_LINE_RULES = [
+  {
+    id: 'test.assertions-removed',
+    // $this->assertSame( · self::assertTrue( · assert.equal( · expect(x)
+    pattern: /\bassert\w*\s*[.(]|->\s*assert\w*\s*\(|::\s*assert\w*\s*\(|\bexpect\s*\(/,
+    label: 'netto entfernte Assertions',
+    scope: 'test',
+  },
+]
+
+/**
+ * Zerlegt einen unified diff in {path, added: [{line, text}], removed, deleted, renamed}.
  * Bewusst genügsam: es zählt, welche Zeilen hinzugekommen sind und welche
  * Dateien verschwunden sind.
  */
@@ -148,7 +177,7 @@ export function parseDiff(diffText) {
     if (raw.startsWith('diff --git ')) {
       // "diff --git a/pfad b/pfad" — der b-Pfad ist der Zielzustand.
       const match = raw.match(/ b\/(.*)$/)
-      current = { path: match ? match[1] : null, added: [], deleted: false }
+      current = { path: match ? match[1] : null, added: [], removed: [], deleted: false }
       files.push(current)
       continue
     }
@@ -178,7 +207,12 @@ export function parseDiff(diffText) {
       newLineNo++
       continue
     }
-    if (raw.startsWith('-')) continue // entfernte Zeile: verschiebt die neue Nummerierung nicht
+    if (raw.startsWith('-') && !raw.startsWith('---')) {
+      // Verschiebt die neue Nummerierung nicht, deshalb keine Zeilennummer: die
+      // alte zeigte auf einen Zustand, den es nicht mehr gibt.
+      current.removed.push({ text: raw.slice(1) })
+      continue
+    }
     if (raw.startsWith(' ') || raw === '') newLineNo++
   }
 
@@ -249,6 +283,23 @@ export function analyseDiff(files, { botAuthor = false, ignorePaths = [] } = {})
       })
     }
 
+    if (IGNORE_FILE.test(file.path)) {
+      for (const { line, text } of file.added) {
+        const entry = text.trim()
+        // Leerzeilen und Kommentare tragen nichts aus. Ein `!`-Eintrag nimmt
+        // Code wieder AUF und ist das Gegenteil einer Umgehung.
+        if (entry === '' || entry.startsWith('#') || entry.startsWith('!')) continue
+
+        findings.push({
+          rule: 'ignore.extended',
+          path: file.path,
+          line,
+          label: 'erweiterte Prüf-Ausnahme',
+          detail: entry.slice(0, 120),
+        })
+      }
+    }
+
     const inTest = isTestFile(file.path)
     const inSource = SOURCE_FILE.test(file.path)
     for (const { line, text } of file.added) {
@@ -264,6 +315,23 @@ export function analyseDiff(files, { botAuthor = false, ignorePaths = [] } = {})
             detail: text.trim().slice(0, 120),
           })
         }
+      }
+    }
+
+    for (const rule of REMOVED_LINE_RULES) {
+      if (rule.scope === 'test' ? !inTest : !inSource) continue
+
+      const count = (lines) => lines.filter((entry) => rule.pattern.test(entry.text)).length
+      const gone = count(file.removed ?? [])
+      const back = count(file.added)
+
+      if (gone > back) {
+        findings.push({
+          rule: rule.id,
+          path: file.path,
+          label: rule.label,
+          detail: `${gone} entfernt, ${back} hinzugefügt`,
+        })
       }
     }
   }

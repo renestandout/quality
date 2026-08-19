@@ -54,6 +54,24 @@ jobs:
           composer install --no-interaction --prefer-dist --no-progress
           npm ci
 
+      # PHPStans Cache liegt im System-Temp (/tmp/phpstan). Auf ubuntu-latest ist
+      # der bei jedem Lauf leer, PHPStan analysiert also immer alles neu: in
+      # rankscan/application 86s statt 6s. Wer das zurückholen will, nimmt den
+      # Block unten dazu. Auf einem self-hosted Runner ist er überflüssig —
+      # dort überlebt /tmp den Lauf.
+      #
+      # Der Schlüssel wechselt bei jedem Lauf, weil ein Cache-Eintrag
+      # unveränderlich ist: restore-keys holt den letzten passenden, PHPStan
+      # verwendet ihn inkrementell weiter. Nicht am Quelltext-Hash festmachen —
+      # ein Cache aus dem Lauf davor ist gültig und genau das, was gebraucht wird.
+      #
+      # - name: PHPStan-Cache
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: /tmp/phpstan
+      #     key: phpstan-${{ github.run_id }}
+      #     restore-keys: phpstan-
+
       # Nur der statische Teil. `test` und `build` bleiben dem tests-Job
       # überlassen, `tamper` folgt unten als eigener Schritt.
       - name: Qualitätsprüfungen (statisch)

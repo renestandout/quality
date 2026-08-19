@@ -37,6 +37,25 @@ parameters:
     # bekommt den Cache vom Tamper-Check als neuen Code vorgehalten (genau so
     # beim adboard-Rollout passiert). PHPStans Standard im System-Temp ist
     # spurenfrei und wird zwischen Läufen ebenso wiederverwendet.
+    #
+    # »Wird zwischen Läufen wiederverwendet« gilt aber nur, wo der System-Temp
+    # den Lauf überlebt. Das trennt die beiden Runner-Typen:
+    #
+    #   self-hosted: /tmp bleibt stehen, der Cache ist ab dem zweiten Lauf warm.
+    #                Nichts zu tun — genau der Fall, für den der Standard gemacht
+    #                ist. Gemessen in rankscan/application am 19.08.2026: PHPStan
+    #                86s kalt, 6s warm; der ganze quality-Job 4:07 -> 1:01.
+    #   ubuntu-latest: jeder Lauf startet mit leerem /tmp, also immer kalt. Wer
+    #                den Gewinn dort will, legt actions/cache auf /tmp/phpstan
+    #                (der Standardpfad, sys_get_temp_dir() + '/phpstan') —
+    #                fertiger Block in examples/ci-split-static-tests.yml.
+    #                Abwägung: der Cache wird schnell dreistellig gross (113 MB
+    #                in rankscan/application), Hoch- und Runterladen kostet also
+    #                einen Teil des Gewinns zurück.
+    #
+    # In beiden Fällen bleibt tmpDir aus der Projektkonfiguration draussen. Wer
+    # von ubuntu-latest auf self-hosted wechselt und ein tmpDir gesetzt hat,
+    # entfernt es dabei — siehe docs/self-hosted-runner.md.
 
     excludePaths:
         analyseAndScan:
