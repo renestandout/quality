@@ -127,9 +127,23 @@ Jobs sind CPU-gebunden, bremsen sich gegenseitig aus und drücken zusätzlich
 in den Swap. Seriell auf der vollen Maschine ist die Gesamtzeit kürzer, jeder
 Job bleibt in seinem Timeout, und die Läufe werden vorhersagbar.
 
-Mehr Parallelität lohnt erst mit mehr Kernen. Bei Lightsail hiesse das
-`xlarge_3_0` (4 vCPU, 84 USD/Mt.) — mehr als die Actions-Rechnung, die wir
-loswerden wollten.
+Mehr Parallelität lohnt erst mit mehr Kernen als Jobs. Solange die Maschine
+zwei hat, bleibt es bei einer Instanz je Repo.
+
+## Gemessene Laufzeiten
+
+rankscan, seriell, 19.08.2026 — dieselbe Suite auf beiden Maschinen:
+
+| Job | Lightsail (gedrosselt) | Hetzner cpx22 |
+|---|---|---|
+| `quality` | 11:52 | **4:07** |
+| `tests` (5300 Tests) | 33:32 | **8:19** |
+| `audit` | 3:02 | **0:36** |
+| gesamt | 48 min | **14:51** |
+
+Die Timeouts in `rankscan/application` (15 / 25 / 10 Minuten) sind an diesen
+Zahlen ausgerichtet: reichlich Luft für eine wachsende Suite, aber eng genug,
+dass ein echter Hänger den einzigen Runner-Slot nicht stundenlang belegt.
 
 Je Instanz, vom Arbeitsrechner aus:
 
