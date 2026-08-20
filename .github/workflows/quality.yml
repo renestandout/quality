@@ -21,6 +21,15 @@ jobs:
       - name: Qualitätsprüfungen
         run: node bin/quality full
 
+      # Läuft auch beim Push auf den Standardbranch: `cc --abschliessen` merged
+      # lokal und pusht die Basis — ohne diesen Zweig sähe der Check den
+      # Normalfall nie. Er blockiert den Push nicht, der ist dann schon
+      # passiert; er macht ihn sichtbar und färbt main rot.
+      # `always()`, damit ein Lauf in einer Runde alles meldet statt in zweien.
       - name: Tamper-Check
-        if: always() && github.event_name == 'pull_request'
-        run: node bin/quality tamper --base origin/${{ github.base_ref }}
+        if: always() && (github.event_name == 'pull_request' || github.event_name == 'push')
+        env:
+          # Pull Request: gegen den Zielbranch. Push: gegen den Stand davor.
+          # Beim ersten Push ist das der Null-SHA — der Check überspringt dann.
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: node bin/quality tamper --base "$BASE"
