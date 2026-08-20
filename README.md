@@ -202,8 +202,26 @@ Baseline hinter `--baseline-path` dagegen schon: sie hält fest, welche Funde
 als bekannt gelten — dieselbe Rolle wie `phpstan-baseline.neon`.
 
 Lokal (`quality tamper`) wird der uncommittete Stand geprüft, inklusive noch
-nicht erfasster Dateien. In CI vergleicht `--base origin/main` gegen den
-Zielbranch.
+nicht erfasster Dateien. In CI kommt der Vergleichsstand aus `--base`.
+
+**Der Check läuft in CI bei beiden Ereignissen**, nicht nur beim Pull Request.
+Das ist seit v0.2.5 so, und der Grund ist unser eigener Arbeitsablauf:
+`cc --abschliessen` merged lokal und pusht `main`, ein Pull Request entsteht
+dabei nicht. Ein Check, der nur PRs kennt, sieht den Normalfall nie.
+
+- **Pull Request:** Basis ist der Zielbranch, `origin/${{ github.base_ref }}`.
+- **Push auf `main`:** Basis ist der Stand vor dem Push,
+  `github.event.before`.
+
+Die Vorlagen in `examples/` setzen beides über eine `BASE`-Variable am Schritt.
+Beim Push blockiert der Check nichts — der Push ist da schon passiert. Er macht
+die Änderung sichtbar und färbt `main` rot.
+
+Zwei Grenzen, ehrlich benannt: Beim allerersten Push eines Branches gibt es
+keinen Stand davor (`github.event.before` ist dann der Null-SHA); der Check
+überspringt sich mit einem Hinweis. Nach einem Force-Push auf `main` existiert
+der Stand davor nicht mehr — dann bricht der Check mit einer Meldung ab und der
+Lauf wird rot. Das ist Absicht: ein Force-Push auf `main` soll auffallen.
 
 Jeder Treffer lässt sich mit einem Commit-Trailer durchwinken:
 

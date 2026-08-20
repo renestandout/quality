@@ -15,8 +15,9 @@ function git(args, cwd) {
 
 /**
  * Prüft die Basis-Referenz vorab, damit statt eines rohen git-Fehlers die
- * häufigste Ursache genannt wird: in CI fehlt fast immer die Historie, weil
- * actions/checkout standardmässig nur einen einzelnen Commit holt.
+ * häufigsten Ursachen genannt werden: in CI fehlt meist die Historie, weil
+ * actions/checkout standardmässig nur einen einzelnen Commit holt — und nach
+ * einem Force-Push existiert der Stand vor dem Push nicht mehr.
  */
 function assertRevisionExists(ref, root) {
   try {
@@ -26,9 +27,22 @@ function assertRevisionExists(ref, root) {
       `Basis-Referenz "${ref}" ist im Repository nicht auffindbar.\n` +
         `  In CI fehlt dafür meist die Vorgeschichte — actions/checkout braucht dann:\n` +
         `      with:\n        fetch-depth: 0\n` +
+        `  Beim Push auf den Standardbranch ist die Basis der Stand davor\n` +
+        `  (github.event.before). Nach einem Force-Push gibt es den nicht mehr:\n` +
+        `  die Historie ist umgeschrieben, der alte Stand nicht mehr erreichbar.\n` +
         `  Lokal ist die Basis üblicherweise "origin/main".`
     )
   }
+}
+
+/**
+ * Der Null-SHA: nur Nullen statt einer Commit-Kennung. GitHub setzt ihn in
+ * `github.event.before`, wenn es keinen Stand vor dem Push gibt — beim ersten
+ * Push eines Branches. Kurzformen zählen mit, weil git Kennungen auch gekürzt
+ * ausgibt.
+ */
+export function isNullRef(ref) {
+  return typeof ref === 'string' && /^0{7,40}$/.test(ref.trim())
 }
 
 /**
@@ -92,10 +106,23 @@ function isBotAuthor(root, base) {
 
 /**
  * Führt den Tamper-Check aus.
- * Mit `base` wird der Bereich base...HEAD geprüft (CI, Pull Request),
- * ohne `base` der uncommittete Stand gegen HEAD (lokal, pre-commit).
+ * Mit `base` wird der Bereich base...HEAD geprüft — in CI der Zielbranch eines
+ * Pull Requests oder der Stand vor einem Push. Ohne `base` gilt der
+ * uncommittete Stand gegen HEAD (lokal, pre-commit).
  */
 export function runTamper({ root, base = null, ignorePaths = [], quiet = false }) {
+  // Beim ersten Push eines Branches gibt es keinen Stand davor. Sauber
+  // überspringen, statt an git zu scheitern — und nicht auf den lokalen Modus
+  // zurückfallen: der prüfte in CI den uncommitteten Stand und meldete grün,
+  // ohne einen einzigen Commit gesehen zu haben.
+  if (isNullRef(base)) {
+    if (!quiet) {
+      process.stdout.write(
+        c.dim('Tamper-Check übersprungen: kein Stand vor diesem Push (Null-SHA als Basis).\n')
+      )
+    }
+    return 0
+  }
   if (base) assertRevisionExists(base, root)
   // Ohne ersten Commit gibt es kein HEAD: dann ist der gesamte Stand neu.
   const committed = hasCommit(root)

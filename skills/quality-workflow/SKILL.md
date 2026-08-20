@@ -42,7 +42,8 @@ systematisch blind bist.
 ## Was du nicht tust
 
 Diese Liste ist kurz, weil jede Zeile darauf zählt. Alles hier wird vom
-Tamper-Check im Diff erkannt und macht den Pull Request rot.
+Tamper-Check im Diff erkannt und macht den CI-Lauf rot — im Pull Request wie
+beim Push auf `main`.
 
 - **Keine Suppressions einfügen.** Kein `@ts-ignore`, `@ts-expect-error`,
   `@phpstan-ignore`, `eslint-disable`, `oxlint-disable`. Wenn ein Prüfer

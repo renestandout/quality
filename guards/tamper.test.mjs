@@ -1,6 +1,25 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
+import { isNullRef, runTamper } from './tamper-git.mjs'
 import { SOFT_LOCALLY, analyseDiff, findException, parseDiff } from './tamper.mjs'
+
+/** Ein echtes Repository mit genau einem Commit — dem Stand nach dem ersten Push. */
+function gitFixture(content) {
+  const root = mkdtempSync(join(tmpdir(), 'quality-tamper-'))
+  const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+  git('init', '--quiet')
+  git('config', 'user.email', 'test@example.com')
+  git('config', 'user.name', 'Test')
+  mkdirSync(join(root, 'src'))
+  writeFileSync(join(root, 'src', 'a.ts'), content)
+  git('add', '.')
+  git('commit', '--quiet', '-m', 'erster Commit')
+  return root
+}
 
 const diff = (body) => parseDiff(body.trimStart())
 
@@ -771,4 +790,42 @@ diff --git a/.gitleaks.toml b/.gitleaks.toml
 +condition = "OR"
 `)
   assert.deepEqual(rules(findings), ['allowlist.extended'])
+})
+
+test('der Null-SHA gilt als leere Basis, eine echte Referenz nicht', () => {
+  // GitHub setzt ihn in github.event.before, wenn es keinen Stand vor dem Push
+  // gibt. Kurzformen zählen mit, weil git Kennungen auch gekürzt ausgibt.
+  assert.equal(isNullRef('0'.repeat(40)), true)
+  assert.equal(isNullRef('0000000'), true)
+  assert.equal(isNullRef(`  ${'0'.repeat(40)}  `), true)
+  assert.equal(isNullRef('b1c9359'), false)
+  assert.equal(isNullRef('origin/main'), false)
+  assert.equal(isNullRef(''), false)
+  assert.equal(isNullRef(null), false)
+})
+
+test('eine Null-SHA-Basis überspringt den Lauf, statt an git zu scheitern', () => {
+  // Der erste Push eines Branches. Wichtig ist nicht nur, dass es keinen
+  // Fehler gibt: der Lauf darf auch nicht in den lokalen Modus fallen — der
+  // prüfte in CI den uncommitteten Stand und meldete grün.
+  const root = gitFixture('// @ts-ignore\nconst a = 1\n')
+  try {
+    assert.equal(runTamper({ root, base: '0'.repeat(40), quiet: true }), 0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('eine unauffindbare Basis bleibt ein Fehler und nennt beide Ursachen', () => {
+  const root = gitFixture('const a = 1\n')
+  try {
+    assert.throws(() => runTamper({ root, base: 'origin/main', quiet: true }), (err) => {
+      assert.match(err.message, /nicht auffindbar/)
+      assert.match(err.message, /fetch-depth: 0/)
+      assert.match(err.message, /Force-Push/)
+      return true
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
