@@ -1,6 +1,6 @@
 {
   "name": "@standout/quality",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Gemeinsame Code-Quality-Werkzeuge für Standout-Projekte: Runner, Stack-Adapter und Basiskonfiguration.",
   "license": "UNLICENSED",
   "private": false,
