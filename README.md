@@ -281,7 +281,12 @@ unter [`runner/`](runner/).
 ## Was das Framework NICHT vereinheitlicht
 
 Den **Linter im JS-Stack**: existiert ein `lint`-Skript, wird es aufgerufen.
-adboard nutzt oxlint, resplan `eslint-config-next` — beides bleibt.
+adboard nutzt oxlint, resplan `eslint-config-next` — beides bleibt. Das Skript
+läuft mit dem Paketmanager des Projekts; welcher das ist, sagt das Feld
+`packageManager` im package.json, sonst das Lockfile. Unter `level: strict`
+hängt das Gate die passende Option an (`--max-warnings=0` für eslint,
+`--deny-warnings` für oxlint). Erkennt es den Linter im Skript nicht, bleibt
+das Skript unverändert und der Schritt meldet, dass strict hier nicht greift.
 
 Den **Formatierungsstil**: `configs/prettier.config.js` ist ein Startwert für
 neue Projekte. Bestehende Projekte passen ihn an ihren Stil an, bevor sie
