@@ -1,6 +1,14 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { findBinary, missingToolHint } from '../lib/tools.mjs'
+import {
+  LINT_STRICT_FLAG,
+  findBinary,
+  hasOnPath,
+  lintStrictArgs,
+  missingToolHint,
+  packageManagerFor,
+  scriptCommand,
+} from '../lib/tools.mjs'
 
 /**
  * TypeScript-Stacks (react-ts, next-ts, node-ts).
@@ -21,8 +29,40 @@ function packageScripts(dir) {
   }
 }
 
-function npmRun(script, ctx, label) {
-  return { name: `${label} (${ctx.component.path})`, cmd: 'npm', args: ['run', '--silent', script], cwd: ctx.dir }
+/**
+ * Ruft ein Skript des Projekts auf — mit dem Paketmanager des Projekts.
+ *
+ * Fehlt dieser Paketmanager im PATH, läuft das Skript mit npm weiter und der
+ * Schritt sagt es. Ein abgebrochener Schritt wäre hier der schlechtere
+ * Tausch: das Skript selbst läuft auch unter npm, nur die Umgebung stimmt
+ * nicht ganz.
+ */
+function runScript(script, ctx, label, extraArgs = []) {
+  const wanted = packageManagerFor(ctx.dir, ctx.root) ?? 'npm'
+  const pm = hasOnPath(wanted) ? wanted : 'npm'
+  const { cmd, args } = scriptCommand(pm, script, extraArgs)
+  return {
+    name: `${label} (${ctx.component.path})`,
+    cmd,
+    args,
+    cwd: ctx.dir,
+    note: pm === wanted ? undefined : `${wanted} fehlt im PATH — das Skript läuft mit npm`,
+  }
+}
+
+/**
+ * Das lint-Skript des Projekts, unter "strict" um die passende Option
+ * ergänzt. Erkennt das Framework den Linter nicht, bleibt das Skript
+ * unverändert und der Schritt meldet, dass strict hier nicht greift.
+ */
+function lintScript(ctx, scriptText) {
+  const strict = ctx.config?.level === 'strict'
+  const extra = strict ? lintStrictArgs(scriptText) : null
+  const step = runScript('lint', ctx, 'lint', extra ?? [])
+  if (strict && !extra) {
+    step.note = 'strict nicht erzwungen — Linter im lint-Skript nicht erkannt'
+  }
+  return step
 }
 
 export default {
@@ -49,29 +89,29 @@ export default {
     const wantsFiles = Boolean(ctx.files?.length)
     const scripts = packageScripts(ctx.dir)
 
-    if (!wantsFiles && scripts.lint) return npmRun('lint', ctx, 'lint')
+    if (!wantsFiles && scripts.lint) return lintScript(ctx, scripts.lint)
 
     // Beide Linter melden Regelverstösse standardmässig als Warnung und
     // beenden mit 0 — ein Gate, das darauf hört, meldet nie etwas. Unter
     // "strict" zählen Warnungen deshalb als Fehler.
     const strict = ctx.config?.level === 'strict'
-    for (const [tool, strictArgs, fallbackArgs] of [
-      ['oxlint', ['--deny-warnings'], []],
-      ['eslint', ['--max-warnings=0'], ['.']],
+    for (const [tool, fallbackArgs] of [
+      ['oxlint', []],
+      ['eslint', ['.']],
     ]) {
       const bin = findBinary(tool, { dir: ctx.dir, root: ctx.root, kind: 'js' })
       if (bin) {
         return {
           name: `${tool} (${ctx.component.path})`,
           cmd: bin,
-          args: [...(strict ? strictArgs : []), ...(wantsFiles ? ctx.files : fallbackArgs)],
+          args: [...(strict ? [LINT_STRICT_FLAG[tool]] : []), ...(wantsFiles ? ctx.files : fallbackArgs)],
           cwd: ctx.dir,
         }
       }
     }
 
     // Kein eigenes Binary auffindbar: dann ist das Projekt-Skript besser als nichts.
-    if (scripts.lint) return npmRun('lint', ctx, 'lint')
+    if (scripts.lint) return lintScript(ctx, scripts.lint)
     return { name: 'lint', skip: 'kein lint-Skript, oxlint oder eslint gefunden' }
   },
 
@@ -107,13 +147,13 @@ export default {
       return { name: `vitest (${ctx.component.path})`, cmd: vitest, args, cwd: ctx.dir }
     }
     const scripts = packageScripts(ctx.dir)
-    if (scripts.test) return npmRun('test', ctx, 'tests')
+    if (scripts.test) return runScript('test', ctx, 'tests')
     return { name: 'tests', skip: 'weder vitest noch ein test-Skript gefunden' }
   },
 
   build(ctx) {
     const scripts = packageScripts(ctx.dir)
     if (!scripts.build) return { name: 'build', skip: 'kein build-Skript' }
-    return npmRun('build', ctx, 'build')
+    return runScript('build', ctx, 'build')
   },
 }

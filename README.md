@@ -11,7 +11,7 @@ enthält: idealerweise eine `quality.yml` mit fünf bis zehn Zeilen.
 PHP-Projekt (ohne Packagist, direkt aus Git):
 
 ```bash
-composer config repositories.quality vcs https://github.com/standout-gmbh/quality
+composer config repositories.quality vcs https://github.com/renestandout/quality
 composer require --dev standout/quality
 composer require --dev larastan/larastan laravel/pint   # Werkzeuge des laravel-Stacks
 ```
@@ -19,8 +19,15 @@ composer require --dev larastan/larastan laravel/pint   # Werkzeuge des laravel-
 JS/TS-Projekt:
 
 ```bash
-npm install -D standout-gmbh/quality prettier
+npm  install -D github:renestandout/quality#v0.2.3 prettier
+pnpm add     -D github:renestandout/quality#v0.2.3 prettier
 ```
+
+Das Paket registriert sich unter seinem eigenen Namen `@standout/quality` —
+so lauten auch die Pfade in `extends` und `import`. Die Version gehört an den
+Tag gepinnt: ein Repository ohne Angabe zieht `main`, und dann ändert sich das
+Gate eines Projekts, ohne dass jemand dort etwas getan hat. Welcher Tag der
+neueste ist, sagt `git ls-remote --tags`.
 
 ## Konfiguration
 
@@ -130,6 +137,11 @@ Der Dependency-Audit läuft je Komponente, nicht je Repository. Das klingt nach
 einem Detail, ist aber der Unterschied zwischen „`composer audit` ist grün" und
 „das Frontend hatte vier offene Verwundbarkeiten" — genau so ist es bei adboard
 passiert, bevor es dieses Werkzeug gab.
+
+Welches Werkzeug misst, entscheidet das Lockfile: `composer audit`,
+`npm audit` oder `pnpm audit`. Der Bericht nennt es dazu, weil die drei
+verschiedene Abhängigkeitsbäume sehen. yarn fehlt bewusst — es schreibt ein
+anderes Format, und der Bericht sagt das, statt eine Zahl zu erfinden.
 
 ### Wie das Level zustande kommt
 
@@ -279,7 +291,12 @@ unter [`runner/`](runner/).
 ## Was das Framework NICHT vereinheitlicht
 
 Den **Linter im JS-Stack**: existiert ein `lint`-Skript, wird es aufgerufen.
-adboard nutzt oxlint, resplan `eslint-config-next` — beides bleibt.
+adboard nutzt oxlint, resplan `eslint-config-next` — beides bleibt. Das Skript
+läuft mit dem Paketmanager des Projekts; welcher das ist, sagt das Feld
+`packageManager` im package.json, sonst das Lockfile. Unter `level: strict`
+hängt das Gate die passende Option an (`--max-warnings=0` für eslint,
+`--deny-warnings` für oxlint). Erkennt es den Linter im Skript nicht, bleibt
+das Skript unverändert und der Schritt meldet, dass strict hier nicht greift.
 
 Den **Formatierungsstil**: `configs/prettier.config.js` ist ein Startwert für
 neue Projekte. Bestehende Projekte passen ihn an ihren Stil an, bevor sie
