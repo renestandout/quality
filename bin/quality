@@ -216,7 +216,9 @@ async function main() {
     for (const verb of plan.verbs) {
       // Die Typprüfung braucht immer das ganze Projekt: eine einzelne Datei
       // ohne ihren Kontext zu prüfen erzeugt Fehler, die es gar nicht gibt.
-      if (verb === 'types' && enriched.kind === 'js') {
+      // Gilt für mypy genauso wie für tsc — nur PHPStan kommt mit einer
+      // Einzeldatei zurecht, weil es den Rest über den Autoloader nachlädt.
+      if (verb === 'types' && (enriched.kind === 'js' || enriched.kind === 'py')) {
         const step = stack[verb]?.({ ...ctx, files: null })
         if (step) steps.push(step)
         continue

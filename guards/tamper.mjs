@@ -64,15 +64,15 @@ const ALLOW_KEY = /^(regexes|paths|stopwords|commits|regexTarget)\b/
 const LIST_ENTRY = /^('''|"|')/
 
 /** Dateien, in denen Test-Muster überhaupt geprüft werden. */
-const TEST_FILE = /(^|\/)(tests?|__tests__|spec)\//i
+export const TEST_FILE = /(^|\/)(tests?|__tests__|spec)\//i
 // Die Modul-Endungen .mjs/.cjs gehören zwingend dazu: node --test nutzt sie,
 // und ohne sie bliebe ein stillgelegter Test in einer .test.mjs unbemerkt.
-const TEST_NAME = /\.(test|spec)\.[mc]?[jt]sx?$|Test\.php$|_test\.py$|test_.*\.py$/i
+export const TEST_NAME = /\.(test|spec)\.[mc]?[jt]sx?$|Test\.php$|_test\.py$|test_.*\.py$/i
 
-const isTestFile = (path) => TEST_FILE.test(path) || TEST_NAME.test(path)
+export const isTestFile = (path) => TEST_FILE.test(path) || TEST_NAME.test(path)
 
 /** Quellcode, in dem Suppressions gesucht werden — nicht in Sperr-/Buildartefakten. */
-const SOURCE_FILE = /\.(php|[jt]sx?|mjs|cjs|vue|py)$/i
+export const SOURCE_FILE = /\.(php|[jt]sx?|mjs|cjs|vue|py)$/i
 
 /**
  * Dateien, die das Gate selbst definieren. Dieselbe Liste dient dem
@@ -155,8 +155,18 @@ export const LINE_RULES = [
     scope: 'source',
   },
   {
+    id: 'suppression.python',
+    // `# type: ignore` (mypy), `# noqa` (ruff/flake8) und die Datei-weiten
+    // Varianten. Beide sind der Normalfall, mit dem in Python ein Befund
+    // stillgelegt wird — das Gegenstueck zu @ts-ignore und eslint-disable.
+    pattern: /#\s*(type:\s*ignore|noqa|mypy:\s*(ignore-errors|disable)|ruff:\s*noqa|pyright:\s*ignore)\b/,
+    label: 'Python-Suppression',
+    scope: 'source',
+  },
+  {
     id: 'test.skipped',
-    pattern: /\b(markTestSkipped|->skip\(|\b(it|test|describe|context)\.skip\b|\btest\.todo\b|@doesNotPerformAssertions|@group\s+skip)/,
+    pattern:
+      /\b(markTestSkipped|->skip\(|\b(it|test|describe|context)\.skip\b|\btest\.todo\b|@doesNotPerformAssertions|@group\s+skip)|@(pytest\.mark\.(skip|skipif|xfail)|unittest\.skip)\b|\bpytest\.skip\s*\(/,
     label: 'übersprungener Test',
     scope: 'test',
   },
@@ -186,7 +196,9 @@ export const REMOVED_LINE_RULES = [
   {
     id: 'test.assertions-removed',
     // $this->assertSame( · self::assertTrue( · assert.equal( · expect(x)
-    pattern: /\bassert\w*\s*[.(]|->\s*assert\w*\s*\(|::\s*assert\w*\s*\(|\bexpect\s*\(/,
+    // Dazu Pythons nacktes Statement `assert x == 1`: es hat weder Klammer
+    // noch Punkt und fiel deshalb durch jedes der Muster darueber.
+    pattern: /\bassert\w*\s*[.(]|->\s*assert\w*\s*\(|::\s*assert\w*\s*\(|\bexpect\s*\(|^\s*assert\s+\S/,
     label: 'netto entfernte Assertions',
     scope: 'test',
   },

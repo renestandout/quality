@@ -19,9 +19,24 @@ composer require --dev larastan/larastan laravel/pint   # Werkzeuge des laravel-
 JS/TS-Projekt:
 
 ```bash
-npm  install -D github:renestandout/quality#v0.2.3 prettier
-pnpm add     -D github:renestandout/quality#v0.2.3 prettier
+npm  install -D github:renestandout/quality#v0.2.6 prettier
+pnpm add     -D github:renestandout/quality#v0.2.6 prettier
 ```
+
+Python-Projekt — über npm, mit einer `package.json`, die nur dafür da ist:
+
+```bash
+npm install -D github:renestandout/quality#v0.2.6
+pip  install ruff mypy pytest pip-audit
+```
+
+Das Paket ist ein npm- und ein Composer-Paket, kein pip-Paket. Ein reines
+Python-Repo bekommt deshalb ein schlankes `package.json` mit dieser einen
+Abhängigkeit. Das klingt nach Fremdkörper, ist aber der kleinere Preis: ein
+drittes Veröffentlichungsformat müsste dieselbe Version an einer weiteren
+Stelle führen, und genau daraus entsteht Drift. Die Werkzeuge selbst kommen
+per pip, aus dem `.venv` der Komponente oder vom PATH — dort sucht der
+Adapter in dieser Reihenfolge.
 
 Das Paket registriert sich unter seinem eigenen Namen `@standout/quality` —
 so lauten auch die Pfade in `extends` und `import`. Die Version gehört an den
@@ -46,7 +61,7 @@ components:
     stack: react-ts
 ```
 
-Bekannte Stacks: `laravel`, `php`, `react-ts`, `next-ts`, `node-ts`.
+Bekannte Stacks: `laravel`, `php`, `react-ts`, `next-ts`, `node-ts`, `python`.
 
 Optional kommt ein `configs:`-Block dazu. Er beantwortet genau eine Frage: für
 welche Konfiguration ist es Absicht, dass das Projekt eine eigene führt statt
@@ -57,17 +72,23 @@ configs:
   prettier: own        # begründet eigener Formatierungsstil
   # phpstan: own
   # tsconfig: own
+  # ruff: own
 ```
 
 `quality audit` prüft nämlich seit v0.2.0, ob die Konfigurationen des Pakets
 überhaupt eingebunden sind — `phpstan.neon` per `includes:`, Prettier und
 tsconfig per `@standout/quality/…` oder per Pfad auf die Composer-Installation
-(`vendor/standout/quality/configs/…`, für Projekte ohne npm-Abhängigkeit). Anlass war rankscan/application: das Projekt
+(`vendor/standout/quality/configs/…`, für Projekte ohne npm-Abhängigkeit),
+`ruff.toml` per `extend =` auf denselben Pfad. Anlass war rankscan/application: das Projekt
 führte das Gate ein, behielt seine bestehende `phpstan.neon` und band die
 Paket-Basis nie ein. `quality init` sagte dazu nur „existiert bereits", also
 liefen vier Wochen lang andere Regeln als gedacht. Wer bewusst abweicht, trägt
 das hier ein — der Hinweis verschwindet dann dauerhaft, statt bei jedem Audit
 erneut überlesen zu werden.
+
+Zwei Konfigurationen werden nicht geprüft, weil ihr Werkzeug keine Vererbung
+kennt: `pint.json` und `mypy.ini`. Beide können nur kopiert werden, und eine
+Kopie lässt sich nicht von einer eigenen Konfiguration unterscheiden.
 
 Das PHPStan-Level steht bewusst bei der Komponente und nicht im Profil. Würde
 `strict` fix Level 8 bedeuten, startete ein gewachsenes Projekt mit vierstelligen
@@ -143,6 +164,12 @@ Welches Werkzeug misst, entscheidet das Lockfile: `composer audit`,
 verschiedene Abhängigkeitsbäume sehen. yarn fehlt bewusst — es schreibt ein
 anderes Format, und der Bericht sagt das, statt eine Zahl zu erfinden.
 
+Bei Python misst `pip-audit`. Es meldet als einziges der vier Werkzeuge
+**keinen Schweregrad** — die PyPI Advisory Database führt keinen. Die Funde
+stehen im Bericht deshalb unter „ohne Einstufung" statt geraten bei „niedrig".
+Der Bericht schlägt bei „hoch" und „kritisch" Alarm; ein geratener Schweregrad
+liesse diesen Alarm entweder ausfallen oder erfände ihn.
+
 ### Wie das Level zustande kommt
 
 Der Audit sucht das höchste PHPStan-Level, auf dem das Projekt heute
@@ -166,6 +193,33 @@ Konfiguration liefe dann still auf dem Standardwert ohne Baseline.
 `init` schreibt nur, was der Audit gemessen hat, und überschreibt nichts von
 sich aus (`--force`, `--dry-run`, `--from audit.json`).
 
+## Python
+
+Der Stack heisst `python` und benutzt drei Werkzeuge: `ruff` formatiert und
+lintet, `mypy` prüft die Typen, `pytest` fährt die Tests. Ein Build-Schritt
+entfällt.
+
+Drei Dinge weichen von den anderen Stacks ab:
+
+- **Der Adapter ruft kein Projekt-Skript auf.** Python kennt keine allgemein
+  übliche Skript-Tabelle wie `package.json`. Ein Makefile-Ziel zu raten misst
+  still das Falsche.
+- **Werkzeuge dürfen im PATH liegen.** Gesucht wird `.venv/bin/<werkzeug>` in
+  der Komponente, dann in der Repo-Wurzel, dann im PATH. Bei PHP und JS gibt
+  es diesen letzten Schritt nicht — dort wäre ein global installiertes
+  Werkzeug die falsche Version. `ruff` und `mypy` werden dagegen regelmässig
+  per pipx oder Homebrew installiert, und ein venv ist keine Pflicht.
+- **Ohne Konfiguration passiert fast nichts.** `ruff` prüft dann nur E4, E7,
+  E9 und F; der Schritt sagt das im Lauf. `mypy` wird ganz übersprungen, statt
+  ohne Strenge über alles zu laufen — inklusive `.venv`. Die Vorlagen dafür
+  sind `configs/ruff.toml` (per `extend` einbinden) und `configs/mypy.ini`
+  (kopieren).
+
+`strict` bedeutet bei Python `mypy --strict`. Für gewachsenen, untypisierten
+Bestand ist das der falsche Start: mypy kennt keine Baseline, mit der sich die
+Fundzahl einfrieren liesse. Dort gilt `standard`, und die Strenge steigt, wenn
+jemand die Annotationen nachzieht.
+
 ## Tamper-Check
 
 `quality tamper` sucht im Diff nach Handgriffen, die ein Gate *umgehen* statt
@@ -174,7 +228,8 @@ existiert: lokale Hooks lassen sich umgehen, dieser Check läuft in CI über den
 fertigen Diff.
 
 Er meldet neu hinzugefügte Suppressions (`@ts-ignore`, `@phpstan-ignore`,
-`eslint-disable` …), stillgelegte oder auf `.only` verengte Tests, gelöschte
+`eslint-disable`, `# type: ignore`, `# noqa` …), stillgelegte oder auf `.only`
+verengte Tests — bei Python `@pytest.mark.skip` und `@pytest.mark.xfail` —, gelöschte
 Testdateien, Änderungen an Baselines, Gate- und CI-Konfiguration sowie
 Lockfile-Änderungen. Test-Muster werden nur in Testdateien gesucht — eine
 Funktion namens `skip()` im Produktivcode ist gewöhnlicher Code.
