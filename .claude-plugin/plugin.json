@@ -1,7 +1,7 @@
 {
   "name": "quality",
   "description": "Qualitäts-Gate für Standout-Projekte: prüft nach jedem Edit, blockiert den Task-Abschluss bei roten Checks und schützt Baselines, Gate-Konfiguration und Tests vor stillen Änderungen.",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "author": {
     "name": "Standout GmbH",
     "email": "rene.haefliger@standout.ch"

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { isNullRef, runTamper } from './tamper-git.mjs'
-import { SOFT_LOCALLY, analyseDiff, findException, parseDiff } from './tamper.mjs'
+import { SOFT_LOCALLY, SOURCE_FILE, analyseDiff, findException, isTestFile, parseDiff } from './tamper.mjs'
 
 /** Ein echtes Repository mit genau einem Commit — dem Stand nach dem ersten Push. */
 function gitFixture(content) {
@@ -828,4 +828,123 @@ test('eine unauffindbare Basis bleibt ein Fehler und nennt beide Ursachen', () =
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('Python-Suppression im Quellcode wird gemeldet', () => {
+  const findings = check(`
+diff --git a/tools/analyse/core/regeln.py b/tools/analyse/core/regeln.py
+--- a/tools/analyse/core/regeln.py
++++ b/tools/analyse/core/regeln.py
+@@ -3,1 +3,2 @@
+ def bewerte(zeile):
++    return zeile.wert  # type: ignore[attr-defined]
+`)
+  assert.deepEqual(rules(findings), ['suppression.python'])
+})
+
+test('noqa nimmt eine Zeile aus der Pruefung und wird gemeldet', () => {
+  const findings = check(`
+diff --git a/tools/analyse/cli.py b/tools/analyse/cli.py
+--- a/tools/analyse/cli.py
++++ b/tools/analyse/cli.py
+@@ -1,1 +1,2 @@
+ import sys
++import os, json  # noqa: E401
+`)
+  assert.deepEqual(rules(findings), ['suppression.python'])
+})
+
+test('ein gewoehnlicher Python-Kommentar ist kein Fund', () => {
+  const findings = check(`
+diff --git a/tools/analyse/cli.py b/tools/analyse/cli.py
+--- a/tools/analyse/cli.py
++++ b/tools/analyse/cli.py
+@@ -1,1 +1,2 @@
+ import sys
++# Die Reihenfolge zaehlt: Basis vor Vergleich.
+`)
+  assert.deepEqual(findings, [])
+})
+
+test('stillgelegter pytest-Fall wird gemeldet', () => {
+  const findings = check(`
+diff --git a/tools/analyse/tests/test_regeln.py b/tools/analyse/tests/test_regeln.py
+--- a/tools/analyse/tests/test_regeln.py
++++ b/tools/analyse/tests/test_regeln.py
+@@ -4,1 +4,2 @@
+ import pytest
++@pytest.mark.skip(reason="spaeter")
+`)
+  assert.deepEqual(rules(findings), ['test.skipped'])
+})
+
+test('xfail zaehlt wie ein uebersprungener Test', () => {
+  // Ein xfail-Test faellt nicht mehr auf, wenn er bricht — dieselbe Wirkung
+  // wie skip, nur unauffaelliger.
+  const findings = check(`
+diff --git a/tools/analyse/tests/test_regeln.py b/tools/analyse/tests/test_regeln.py
+--- a/tools/analyse/tests/test_regeln.py
++++ b/tools/analyse/tests/test_regeln.py
+@@ -4,1 +4,2 @@
+ import pytest
++@pytest.mark.xfail
+`)
+  assert.deepEqual(rules(findings), ['test.skipped'])
+})
+
+test('das Wort skip im Python-Produktivcode ist kein Fund', () => {
+  const findings = check(`
+diff --git a/tools/analyse/core/lauf.py b/tools/analyse/core/lauf.py
+--- a/tools/analyse/core/lauf.py
++++ b/tools/analyse/core/lauf.py
+@@ -1,1 +1,2 @@
+ def lauf():
++    return itertools.islice(zeilen, skip, None)
+`)
+  assert.deepEqual(findings, [])
+})
+
+test('netto entfernte Python-Assertions werden gemeldet', () => {
+  // Pythons nacktes `assert x == 1` hat weder Klammer noch Punkt. Ohne eine
+  // eigene Alternative im Muster faellt genau der haeufigste Fall durch.
+  const findings = check(`
+diff --git a/tools/analyse/tests/test_regeln.py b/tools/analyse/tests/test_regeln.py
+--- a/tools/analyse/tests/test_regeln.py
++++ b/tools/analyse/tests/test_regeln.py
+@@ -10,4 +10,2 @@
+ def test_summe():
+-    assert summe([1, 2]) == 3
+-    assert summe([]) == 0
+     pass
+`)
+  assert.deepEqual(rules(findings), ['test.assertions-removed'])
+})
+
+test('umformulierte Python-Assertions sind kein Fund', () => {
+  const findings = check(`
+diff --git a/tools/analyse/tests/test_regeln.py b/tools/analyse/tests/test_regeln.py
+--- a/tools/analyse/tests/test_regeln.py
++++ b/tools/analyse/tests/test_regeln.py
+@@ -10,2 +10,2 @@
+ def test_summe():
+-    assert summe([1, 2]) == 3
++    assert summe([1, 2]) == 3, "Basis"
+`)
+  assert.deepEqual(findings, [])
+})
+
+test('Quell- und Testmuster decken alle gepruegten Sprachen ab', () => {
+  // Diese beiden Muster benutzt auch der Audit (lib/audit-run.mjs). Sie
+  // standen dort einmal als eigene Kopie ohne .py — der Bericht meldete
+  // daraufhin "0 Quelldateien" fuer ein Projekt voller Python und uebersah
+  // jede Suppression darin. Der Test haelt die eine Quelle fest.
+  for (const path of ['app/Service.php', 'src/app.ts', 'lib/run.mjs', 'tools/analyse/cli.py']) {
+    assert.ok(SOURCE_FILE.test(path), `${path} sollte als Quellcode gelten`)
+  }
+  assert.ok(!SOURCE_FILE.test('composer.lock'))
+
+  for (const path of ['tests/Feature/LoginTest.php', 'src/app.test.ts', 'tools/analyse/tests/test_cli.py', 'core/regeln_test.py']) {
+    assert.ok(isTestFile(path), `${path} sollte als Testdatei gelten`)
+  }
+  assert.ok(!isTestFile('tools/analyse/cli.py'))
 })

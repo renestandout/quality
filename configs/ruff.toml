@@ -1,0 +1,53 @@
+# Gemeinsame ruff-Grundlage für Standout-Projekte.
+#
+# Einbinden in der projekteigenen ruff.toml:
+#
+#     extend = "node_modules/@standout/quality/configs/ruff.toml"
+#
+# ruff liest `extend` relativ zur einbindenden Datei. Ein Projekt, das das
+# Paket über Composer hat, zeigt stattdessen auf
+# `vendor/standout/quality/configs/ruff.toml`.
+#
+# Warum die Einbindung zählt: ohne jede Konfiguration prüft ruff nur E4, E7,
+# E9 und F — ein Bruchteil dessen, was es kann. Das Gate wäre grün und
+# prüfte fast nichts.
+
+# Der Zielwert für neue Projekte. Bestehende setzen ihre eigene Zeile
+# darunter, wenn sie noch auf einer älteren Fassung laufen.
+target-version = "py311"
+
+# 100 wie printWidth in der Prettier-Vorlage. Eine Zahl für alle Sprachen
+# erspart die Diskussion je Repository.
+line-length = 100
+
+[lint]
+# Startwert, kein Endzustand. Die Auswahl deckt ab, was ohne Typinformation
+# entscheidbar ist und in der Praxis Fehler findet:
+#
+#   E, W  pycodestyle — Formfehler, die ruff format nicht selbst richtet
+#   F     pyflakes — ungenutzte Importe und Namen, echte Tippfehler
+#   I     isort — Importreihenfolge, sonst ein Dauerthema im Review
+#   B     bugbear — die Fallen, die syntaktisch gültig sind (mutable defaults)
+#   UP    pyupgrade — veraltete Schreibweisen
+#   SIM   flake8-simplify
+#
+# Nicht dabei: ANN (Typannotationen) und D (Docstrings). Beide erzeugen in
+# gewachsenem Code vierstellige Fundzahlen und gehören nach einer bewussten
+# Entscheidung dazu, nicht als Startwert.
+select = ["E", "W", "F", "I", "B", "UP", "SIM"]
+
+# E501 nicht: die Zeilenlänge richtet `ruff format`, und was es stehen lässt
+# (lange URLs in Kommentaren, Zeichenketten ohne Umbruchstelle) ist genau das,
+# was ein Mensch auch nicht besser machen würde.
+ignore = ["E501"]
+
+[lint.per-file-ignores]
+# Tests dürfen Namen aus Fixtures schatten und Zusicherungen wiederholen.
+"**/tests/**" = ["B011"]
+"**/test_*.py" = ["B011"]
+"**/*_test.py" = ["B011"]
+
+[format]
+# Doppelte Anführungszeichen wie bei black — der Bestand im Python-Ökosystem
+# ist hier eindeutig, anders als bei Prettier im JS-Bestand.
+quote-style = "double"

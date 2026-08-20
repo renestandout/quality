@@ -41,3 +41,28 @@ test('Die Basiskonfiguration legt das Level nicht fest', () => {
   const wirksam = neon.split('\n').filter((line) => !line.trim().startsWith('#'))
   assert.ok(!wirksam.some((line) => /^\s*level:/.test(line)))
 })
+
+test('Die mypy-Vorlage legt die Strenge nicht fest', () => {
+  // Dasselbe Argument wie bei PHPStans Level: --strict kommt aus dem Profil
+  // in quality.yml und wird vom Runner uebergeben. Stuende es zusaetzlich in
+  // der Datei, liefe ein Projekt unter "standard" trotzdem streng.
+  const ini = readFileSync(join(PKG_ROOT, 'configs', 'mypy.ini'), 'utf8')
+  const wirksam = ini.split('\n').filter((line) => !line.trim().startsWith(';'))
+  assert.ok(!wirksam.some((line) => /^\s*strict\s*=/.test(line)))
+})
+
+test('Die ruff-Vorlage schliesst Fremdcode nicht ein, die mypy-Vorlage schon', () => {
+  // `mypy .` analysiert ohne exclude das gesamte venv mit: Minuten Laufzeit
+  // und Fehler in Paketen, an denen niemand hier etwas aendert. ruff bringt
+  // seine eigene Ausschlussliste (.venv, node_modules) bereits mit.
+  const ini = readFileSync(join(PKG_ROOT, 'configs', 'mypy.ini'), 'utf8')
+  assert.match(ini, /^exclude\s*=.*\\\.venv/m)
+})
+
+test('Die ruff-Vorlage waehlt Regeln aus, statt sich auf den Standard zu verlassen', () => {
+  // Ohne select gilt E4, E7, E9 und F — das Gate waere gruen und pruefte
+  // fast nichts. Genau der Grund, warum die Einbindung geprueft wird.
+  const toml = readFileSync(join(PKG_ROOT, 'configs', 'ruff.toml'), 'utf8')
+  const wirksam = toml.split('\n').filter((line) => !line.trim().startsWith('#'))
+  assert.ok(wirksam.some((line) => /^select\s*=/.test(line)))
+})
