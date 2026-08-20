@@ -11,7 +11,7 @@ enthält: idealerweise eine `quality.yml` mit fünf bis zehn Zeilen.
 PHP-Projekt (ohne Packagist, direkt aus Git):
 
 ```bash
-composer config repositories.quality vcs https://github.com/standout-gmbh/quality
+composer config repositories.quality vcs https://github.com/renestandout/quality
 composer require --dev standout/quality
 composer require --dev larastan/larastan laravel/pint   # Werkzeuge des laravel-Stacks
 ```
@@ -19,8 +19,15 @@ composer require --dev larastan/larastan laravel/pint   # Werkzeuge des laravel-
 JS/TS-Projekt:
 
 ```bash
-npm install -D standout-gmbh/quality prettier
+npm  install -D github:renestandout/quality#v0.2.3 prettier
+pnpm add     -D github:renestandout/quality#v0.2.3 prettier
 ```
+
+Das Paket registriert sich unter seinem eigenen Namen `@standout/quality` —
+so lauten auch die Pfade in `extends` und `import`. Die Version gehört an den
+Tag gepinnt: ein Repository ohne Angabe zieht `main`, und dann ändert sich das
+Gate eines Projekts, ohne dass jemand dort etwas getan hat. Welcher Tag der
+neueste ist, sagt `git ls-remote --tags`.
 
 ## Konfiguration
 
@@ -130,6 +137,11 @@ Der Dependency-Audit läuft je Komponente, nicht je Repository. Das klingt nach
 einem Detail, ist aber der Unterschied zwischen „`composer audit` ist grün" und
 „das Frontend hatte vier offene Verwundbarkeiten" — genau so ist es bei adboard
 passiert, bevor es dieses Werkzeug gab.
+
+Welches Werkzeug misst, entscheidet das Lockfile: `composer audit`,
+`npm audit` oder `pnpm audit`. Der Bericht nennt es dazu, weil die drei
+verschiedene Abhängigkeitsbäume sehen. yarn fehlt bewusst — es schreibt ein
+anderes Format, und der Bericht sagt das, statt eine Zahl zu erfinden.
 
 ### Wie das Level zustande kommt
 
