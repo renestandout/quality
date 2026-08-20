@@ -179,6 +179,16 @@ Seit v0.2.0 zusätzlich zwei Dinge, die keine hinzugefügte Codezeile hinterlass
   stehen bewusst NICHT unter den geschützten Pfaden: dieselbe Liste ist die
   Blockliste des PreToolUse-Hooks, und eine Positivliste wird legitim erweitert.
 
+Dazu die **erweiterte Secret-Ausnahme** in `.gitleaks.toml` und
+`gitleaks.toml`. Eine Allowlist dort nimmt Code aus dem Secret-Scan — dieselbe
+Wirkung wie eine Ignore-Zeile, nur bei dem Werkzeug, das Geheimnisse sucht.
+Gemeldet wird nur, was die Ausnahme weitet: eine hinzugefügte
+`[[rules]]`-Sektion verschärft die Prüfung und zählt nicht, `targetRules` und
+`condition = "AND"` grenzen eine Ausnahme ein. Die Konfiguration steht aus
+demselben Grund wie die Ignore-Dateien nicht unter den geschützten Pfaden. Die
+Baseline hinter `--baseline-path` dagegen schon: sie hält fest, welche Funde
+als bekannt gelten — dieselbe Rolle wie `phpstan-baseline.neon`.
+
 Lokal (`quality tamper`) wird der uncommittete Stand geprüft, inklusive noch
 nicht erfasster Dateien. In CI vergleicht `--base origin/main` gegen den
 Zielbranch.

@@ -300,6 +300,14 @@ diff --git a/.prettierignore b/.prettierignore
  /dist
 +/src/legacy
 `,
+    `
+diff --git a/.gitleaks.toml b/.gitleaks.toml
+--- a/.gitleaks.toml
++++ b/.gitleaks.toml
+@@ -1,1 +1,2 @@
+ [allowlist]
++paths = ['''docs/''']
+`,
   ]
   for (const p of proben) for (const f of check(p)) erzeugt.add(f.rule)
   for (const rule of SOFT_LOCALLY) {
@@ -540,4 +548,227 @@ deleted file mode 100644
 -assert.equal(b, 2)
 `)
   assert.deepEqual(rules(findings), ['test.deleted'])
+})
+
+test('hinzugefügte Allowlist-Zeile in .gitleaks.toml wird gemeldet', () => {
+  const findings = check(`
+diff --git a/.gitleaks.toml b/.gitleaks.toml
+--- a/.gitleaks.toml
++++ b/.gitleaks.toml
+@@ -20,3 +20,4 @@
+ [allowlist]
+ regexes = [
++  '''SORT_STORAGE_KEY''',
+ ]
+`)
+  assert.deepEqual(rules(findings), ['allowlist.extended'])
+  assert.equal(findings[0].line, 22)
+  assert.equal(findings[0].label, 'erweiterte Secret-Ausnahme')
+})
+
+test('die Form [[allowlists]] mit paths wird ebenso gemeldet', () => {
+  // adboard und die drei rankscan-Repos schreiben es so, resplan als [allowlist].
+  const findings = check(`
+diff --git a/.gitleaks.toml b/.gitleaks.toml
+--- a/.gitleaks.toml
++++ b/.gitleaks.toml
+@@ -12,0 +13,3 @@
++[[allowlists]]
++description = "docroot/ ist der Mautic-Upstream-Drop, kein Eigencode"
++paths = ['''^docroot/''']
+`)
+  assert.deepEqual(rules(findings), ['allowlist.extended'])
+  // Gemeldet wird die Ausnahme selbst, nicht ihre Begründung.
+  assert.match(findings[0].detail, /\^docroot\//)
+})
+
+test('eine hinzugefügte [[rules]]-Sektion verschärft und ist kein Fund', () => {
+  // Sonst meldete die Regel das Gegenteil von dem, was passiert.
+  const findings = check(`
+diff --git a/.gitleaks.toml b/.gitleaks.toml
+--- a/.gitleaks.toml
++++ b/.gitleaks.toml
+@@ -5,0 +6,8 @@
++[[rules]]
++id = "moco-api-key"
++description = "MOCO-Schluessel (Praefix gk_)"
++regex = '''gk_[A-Za-z0-9_-]{16,}'''
++keywords = [
++  "gk_",
++]
++path = '''\\.env$'''
+`)
+  assert.deepEqual(findings, [])
+})
+
+test('eine unveränderte gitleaks-Konfiguration meldet nicht', () => {
+  // Nur entfernte Zeilen: eine Ausnahme verschwindet, das verschärft.
+  const findings = check(`
+diff --git a/.gitleaks.toml b/.gitleaks.toml
+--- a/.gitleaks.toml
++++ b/.gitleaks.toml
+@@ -20,3 +20,2 @@
+ [allowlist]
+-regexes = ['''alt''']
+`)
+  assert.deepEqual(findings, [])
+})
+
+test('gitleaks.toml ohne führenden Punkt zählt auch', () => {
+  const findings = check(`
+diff --git a/config/gitleaks.toml b/config/gitleaks.toml
+--- a/config/gitleaks.toml
++++ b/config/gitleaks.toml
+@@ -1,0 +2,2 @@
++[allowlist]
++stopwords = ["beispiel"]
+`)
+  assert.deepEqual(rules(findings), ['allowlist.extended'])
+})
+
+test('eine Allowlist INNERHALB einer Regel wird gemeldet', () => {
+  // [rules.allowlist] nimmt Code aus genau dieser Regel — eine Ausnahme bleibt
+  // eine Ausnahme, auch wenn sie unter [[rules]] steht.
+  const findings = check(`
+diff --git a/.gitleaks.toml b/.gitleaks.toml
+--- a/.gitleaks.toml
++++ b/.gitleaks.toml
+@@ -10,0 +11,3 @@
++[[rules]]
++[rules.allowlist]
++paths = ['''tests/''']
+`)
+  assert.deepEqual(rules(findings), ['allowlist.extended'])
+})
+
+test('ein abgeschalteter Standard-Regelsatz wird gemeldet', () => {
+  // useDefault = false steht in [extend] und ist die grösstmögliche Ausnahme.
+  const findings = check(`
+diff --git a/.gitleaks.toml b/.gitleaks.toml
+--- a/.gitleaks.toml
++++ b/.gitleaks.toml
+@@ -3,1 +3,1 @@
+ [extend]
+-useDefault = true
++useDefault = false
+`)
+  assert.deepEqual(rules(findings), ['allowlist.extended'])
+})
+
+test('minVersion oder eine neue Regel allein melden nicht', () => {
+  const findings = check(`
+diff --git a/.gitleaks.toml b/.gitleaks.toml
+--- a/.gitleaks.toml
++++ b/.gitleaks.toml
+@@ -1,0 +2,2 @@
++minVersion = "8.30.1"
++[extend]
+`)
+  assert.deepEqual(findings, [])
+})
+
+test('Realfall: resplans .gitleaks.toml erzeugt Treffer, aber nur aus der Allowlist', () => {
+  // Die Datei kam am 20.08.2026 dazu (Branch task/audit-job, Commit 2b20fd3).
+  // `quality tamper --base origin/main` meldete danach genau einen Treffer,
+  // den CI-Workflow. Über die Allowlist sagte er nichts — der Anlass dieser Regel.
+  const datei = `# Konfiguration fuer den Secret-Scan im audit-Job.
+#
+# Vier Fehlalarme machen einen Secret-Scan wertlos: man liest ihn nach dem
+# zweiten Mal nicht mehr. Deshalb die Allowlist unten.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "moco-api-key"
+description = "MOCO-Schluessel (Praefix gk_)"
+regex = '''gk_[A-Za-z0-9_-]{16,}'''
+keywords = ["gk_"]
+
+[allowlist]
+description = "Geprueft am 20.08.2026 — vier Funde, kein Geheimnis darunter"
+regexTarget = "line"
+regexes = [
+  # Namen von localStorage-Schluesseln.
+  '''(SORT|COL_WIDTHS)_STORAGE_KEY''',
+  # HMAC-Schluessel der MOCO-Webhook-Tests.
+  '''1d608b9d72219b90ff2393a1d3ee0ac0''',
+]
+`
+  const findings = analyseDiff([
+    {
+      path: '.gitleaks.toml',
+      deleted: false,
+      added: datei.split('\n').map((text, index) => ({ line: index + 1, text })),
+    },
+  ])
+
+  assert.ok(findings.length > 0, 'die Datei müsste einen Treffer erzeugen')
+  assert.deepEqual([...new Set(rules(findings))], ['allowlist.extended'])
+  // Die eigene Regel auf das MOCO-Praefix verschärft und darf nicht auftauchen.
+  for (const f of findings) {
+    assert.doesNotMatch(f.detail, /gk_/, `verschärfende Zeile gemeldet: ${f.detail}`)
+  }
+  assert.ok(
+    findings.some((f) => f.detail.includes('STORAGE_KEY')),
+    'die weggedrückte Fundstelle müsste im Bericht stehen'
+  )
+})
+
+test('die Allowlist-Regel ist lokal weich und in CI bindend', () => {
+  // Wie bei den Ignore-Dateien: lokal gibt es keinen Commit und damit keinen
+  // Trailer, mit dem sich das durchwinken liesse.
+  assert.ok(SOFT_LOCALLY.has('allowlist.extended'))
+})
+
+test('die gitleaks-Konfiguration steht NICHT unter den geschützten Pfaden', () => {
+  // Dieselbe Liste ist die Blockliste des PreToolUse-Hooks. Eine Konfiguration,
+  // die legitim um eine [[rules]]-Sektion wächst, gehört nicht dorthin.
+  const findings = check(`
+diff --git a/.gitleaks.toml b/.gitleaks.toml
+--- a/.gitleaks.toml
++++ b/.gitleaks.toml
+@@ -20,0 +21,1 @@
++paths = ['''docs/''']
+`)
+  assert.ok(!rules(findings).includes('protected.changed'))
+})
+
+test('die gitleaks-Baseline dagegen ist ein geschützter Pfad', () => {
+  // Sie hält fest, welche Funde als bekannt gelten — dieselbe Rolle wie
+  // phpstan-baseline.neon.
+  for (const datei of ['gitleaks-baseline.json', '.gitleaks-baseline.json', 'ci/gitleaks.baseline.json']) {
+    const findings = analyseDiff([{ path: datei, added: [{ line: 1, text: '[]' }], deleted: false }])
+    assert.deepEqual(rules(findings), ['protected.changed'], `${datei} müsste geschützt sein`)
+    assert.equal(findings[0].label, 'gitleaks-Baseline geändert')
+  }
+})
+
+test('eingrenzende Schlüssel in einer Allowlist sind kein Fund', () => {
+  // targetRules bindet die Ausnahme an eine benannte Regel, condition = "AND"
+  // verlangt alle Kriterien zugleich. Beides verengt sie.
+  const findings = check(`
+diff --git a/.gitleaks.toml b/.gitleaks.toml
+--- a/.gitleaks.toml
++++ b/.gitleaks.toml
+@@ -29,0 +30,3 @@
++[[allowlists]]
++targetRules = ["generic-api-key"]
++condition = "AND"
+`)
+  assert.deepEqual(findings, [])
+})
+
+test('der Wechsel von AND auf OR in einer Allowlist wird gemeldet', () => {
+  // Danach genügt jedes Kriterium für sich. Im Diff steht sonst nichts davon.
+  const findings = check(`
+diff --git a/.gitleaks.toml b/.gitleaks.toml
+--- a/.gitleaks.toml
++++ b/.gitleaks.toml
+@@ -32,1 +32,1 @@
+ [[allowlists]]
+-condition = "AND"
++condition = "OR"
+`)
+  assert.deepEqual(rules(findings), ['allowlist.extended'])
 })

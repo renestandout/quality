@@ -21,7 +21,12 @@ export const EXCEPTION_TRAILER = 'Quality-Exception:'
  * keinen Commit und damit keinen Trailer, mit dem man das durchwinken könnte —
  * ein Projekt käme sonst gar nicht erst durch sein eigenes Onboarding.
  */
-export const SOFT_LOCALLY = new Set(['protected.changed', 'dependency.changed', 'ignore.extended'])
+export const SOFT_LOCALLY = new Set([
+  'protected.changed',
+  'dependency.changed',
+  'ignore.extended',
+  'allowlist.extended',
+])
 
 /**
  * Ignore-Dateien von Formatierer und Linter. Eine hinzugefügte Zeile darin nimmt
@@ -34,6 +39,29 @@ export const SOFT_LOCALLY = new Set(['protected.changed', 'dependency.changed', 
  * Hook, der das blockt, hält die Arbeit auf, ohne etwas zu schützen.
  */
 const IGNORE_FILE = /(^|\/)\.(prettier|eslint)ignore$/
+
+/**
+ * Konfiguration des Secret-Scanners: .gitleaks.toml und gitleaks.toml.
+ * Eine Allowlist darin nimmt Code aus der Prüfung — dieselbe Wirkung wie eine
+ * Zeile in .prettierignore, nur bei dem Werkzeug, das Geheimnisse sucht.
+ *
+ * Aus demselben Grund wie IGNORE_FILE nicht in PROTECTED_PATHS: die Datei wird
+ * legitim erweitert — eine eigene [[rules]]-Sektion, ein minVersion-Bump, ein
+ * Pfad für einen Upstream-Drop. Ein Hook, der das blockt, hält die Arbeit auf,
+ * ohne etwas zu schützen; die Umgehung meldet ohnehin `allowlist.extended`.
+ * Die Baseline hinter --baseline-path steht dort sehr wohl: sie ist ein
+ * Verzeichnis akzeptierter Funde, wie phpstan-baseline.neon.
+ */
+const GITLEAKS_FILE = /(^|\/)\.?gitleaks\.toml$/
+
+/** Abschnittskopf: [allowlist], [[allowlists]], [[rules]], [rules.allowlist]. */
+const TOML_SECTION = /^\[\[?\s*([^\]\s]+)\s*\]\]?/
+
+/** Schlüssel, die es nur in einer Allowlist gibt. Sie weiten die Ausnahme. */
+const ALLOW_KEY = /^(regexes|paths|stopwords|commits|regexTarget)\b/
+
+/** Eintrag einer mehrzeiligen Liste: '''…''' oder "…". */
+const LIST_ENTRY = /^('''|"|')/
 
 /** Dateien, in denen Test-Muster überhaupt geprüft werden. */
 const TEST_FILE = /(^|\/)(tests?|__tests__|spec)\//i
@@ -56,6 +84,7 @@ export const PROTECTED_PATHS = [
   // ist ein Workflow und keine Quality-Konfiguration, auch wenn sie so heisst.
   { pattern: /^\.github\/workflows\//, label: 'CI-Workflow' },
   { pattern: /(^|\/)phpstan-baseline\.neon$/, label: 'PHPStan-Baseline' },
+  { pattern: /(^|\/)\.?gitleaks[-.]baseline\.json$/, label: 'gitleaks-Baseline' },
   { pattern: /(^|\/)eslint-suppressions\.json$/, label: 'ESLint-Suppressions' },
   { pattern: /^quality\.ya?ml$/, label: 'Quality-Konfiguration' },
   { pattern: /(^|\/)phpstan\.neon(\.dist)?$/, label: 'PHPStan-Konfiguration' },
@@ -220,6 +249,94 @@ export function parseDiff(diffText) {
 }
 
 /**
+ * Weitet diese Zeile einer gitleaks-Konfiguration die Ausnahme?
+ *
+ * `section` ist der Abschnitt, in dem die Zeile steht: 'allow' für eine
+ * Allowlist, 'other' für [[rules]] und [extend], null wenn er unbekannt ist.
+ * `arrayKey` ist der Schlüssel einer offenen mehrzeiligen Liste.
+ */
+function widensGitleaks(entry, section, arrayKey) {
+  // Der Standard-Regelsatz abgeschaltet: die grösstmögliche Ausnahme, und sie
+  // steht in [extend], nicht in der Allowlist.
+  if (/^useDefault\s*=\s*false\b/.test(entry)) return true
+  // Eine Beschreibung begründet eine Ausnahme, sie weitet sie nicht.
+  if (/^description\s*=/.test(entry)) return false
+  // Zwei Schlüssel GRENZEN eine Ausnahme ein: targetRules bindet sie an eine
+  // benannte Regel, condition = "AND" verlangt alle Kriterien zugleich.
+  if (/^targetRules\s*=/.test(entry)) return false
+  if (/^condition\s*=\s*["']AND["']/i.test(entry)) return false
+  // "OR" weitet dagegen: dann genügt jedes Kriterium für sich. Der Schlüssel
+  // kommt nur in einer Allowlist vor, deshalb zählt er ohne Abschnitt.
+  if (/^condition\s*=\s*["']OR["']/i.test(entry)) return true
+  // Eine hinzugefügte [[rules]]-Sektion VERSCHÄRFT die Prüfung. Sie darf keinen
+  // Treffer erzeugen, sonst meldet die Regel das Gegenteil von dem, was passiert.
+  if (section === 'other') return false
+  if (section === 'allow') return true
+
+  // Abschnitt unbekannt — dann entscheidet der Schlüssel.
+  if (ALLOW_KEY.test(entry)) return true
+  if (LIST_ENTRY.test(entry)) return arrayKey === null || ALLOW_KEY.test(arrayKey)
+  return false
+}
+
+/**
+ * Sucht in einer gitleaks-Konfiguration die hinzugefügten Zeilen, die eine
+ * Ausnahme weiten.
+ *
+ * Anders als eine .prettierignore ist die Datei strukturiert: dieselbe Zeile
+ * bedeutet in [allowlist] das Gegenteil von dem, was sie in [[rules]] bedeutet.
+ * Der Abschnitt wird deshalb über die hinzugefügten Zeilen mitgeführt.
+ *
+ * Die Grenze offen benannt: der Diff kommt mit --unified=0, es gibt keine
+ * Kontextzeilen. Wird ein Eintrag mitten in eine bestehende `keywords`-Liste
+ * eingefügt, fehlt jeder Hinweis auf den Abschnitt — die Zeile meldet dann,
+ * obwohl sie verschärft. Der Fall ist selten; die umgekehrte Voreinstellung
+ * wäre der teurere Fehler, weil sie eine weggedrückte Fundstelle verschweigt.
+ */
+function scanGitleaksConfig(file) {
+  const findings = []
+  let section = null
+  let arrayKey = null
+
+  for (const { line, text } of file.added) {
+    const entry = text.trim()
+    if (entry === '' || entry.startsWith('#')) continue
+
+    const header = entry.match(TOML_SECTION)
+    if (header) {
+      // Der letzte Namensteil zählt: [rules.allowlist] ist eine Allowlist.
+      const name = header[1].split('.').pop()
+      section = /^allowlists?$/i.test(name) ? 'allow' : 'other'
+      arrayKey = null
+      continue
+    }
+
+    // Klammern einer mehrzeiligen Liste tragen selbst keinen Wert.
+    const opens = entry.match(/^([A-Za-z_][\w-]*)\s*=\s*\[$/)
+    if (opens) {
+      arrayKey = opens[1]
+      continue
+    }
+    if (/^[\]}],?$/.test(entry)) {
+      arrayKey = null
+      continue
+    }
+
+    if (!widensGitleaks(entry, section, arrayKey)) continue
+
+    findings.push({
+      rule: 'allowlist.extended',
+      path: file.path,
+      line,
+      label: 'erweiterte Secret-Ausnahme',
+      detail: entry.slice(0, 120),
+    })
+  }
+
+  return findings
+}
+
+/**
  * Bewertet einen geparsten Diff.
  *
  * `botAuthor` unterdrückt zwei Regeln: die Lockfile-Regel — ein Renovate-Lauf
@@ -299,6 +416,8 @@ export function analyseDiff(files, { botAuthor = false, ignorePaths = [] } = {})
         })
       }
     }
+
+    if (GITLEAKS_FILE.test(file.path)) findings.push(...scanGitleaksConfig(file))
 
     const inTest = isTestFile(file.path)
     const inSource = SOURCE_FILE.test(file.path)
