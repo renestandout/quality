@@ -54,6 +54,7 @@ beim Push auf `main`.
 - **Keine Baseline erweitern.** `phpstan-baseline.neon` und
   `eslint-suppressions.json` frieren die Vergangenheit ein. Neue Fehler dort
   einzutragen heisst, das Problem in die Zukunft zu verschieben.
+  Eine Baseline SCHRUMPFEN darfst du dagegen — und sollst du auch, siehe unten.
 - **Keine Quality-Konfiguration anfassen.** `quality.yml`, `phpstan.neon`,
   Linter- und Formatter-Konfiguration, CI-Workflows und Hook-Einstellungen
   ändert der Mensch, nicht du.
@@ -63,6 +64,34 @@ beim Push auf `main`.
 - **Keine Abhängigkeit ohne Auftrag.** Neue Pakete brauchen eine Begründung
   und die Zustimmung des Menschen. Prüfe zuerst, ob das Projekt das Problem
   schon löst.
+
+## Die Baseline schrumpfen: `quality prune`
+
+Das ist die eine Ausnahme in der Liste oben, und sie ist ausdrücklich gewollt.
+
+Verbesserst du Code, werden Baseline-Einträge wertlos. PHPStan meldet sie dann
+als `ignore.unmatched`, und der Lauf wird rot, obwohl kein echter Fehler offen
+ist. Das behebst du selbst:
+
+```bash
+quality prune --dry-run   # zeigt, welche Einträge wegfallen
+quality prune             # entfernt sie
+```
+
+Drei Dinge dazu:
+
+- **Editiere die Datei nie von Hand.** Der Hook lehnt das ab, und das ist
+  richtig: das Kommando fragt den Analysator, WELCHE Einträge tot sind. Du
+  kannst das nicht raten.
+- **Der Lauf über die Shell ist kein Umweg um den Hook**, sondern der
+  vorgesehene Weg. Das Kommando kann konstruktionsbedingt nur schrumpfen.
+- **Du brauchst dafür keine Ausnahme.** Der Tamper-Check bewertet eine
+  Baseline-Änderung nach ihrer Richtung: entfernt sie nur, ist sie kein Fund.
+  `Quality-Exception:` bleibt trotzdem Menschen vorbehalten — du brauchst es
+  hier einfach nicht mehr.
+
+Meldet das Kommando eine unerfüllte Ausnahme AUSSERHALB der Baseline, steht sie
+in der `phpstan.neon`. Die fasst du nicht an; sag es dem Menschen.
 
 ## Wenn du an eine dieser Grenzen stösst
 
@@ -83,3 +112,4 @@ Vielfaches, weil niemand mehr weiss, dass er da ist.
 | `quality fast` | vor Task-Abschluss (läuft automatisch) |
 | `quality task` | vor dem Commit, inklusive Tests |
 | `quality tamper` | zeigt, was am aktuellen Stand ein Gate umgehen würde |
+| `quality prune` | entfernt tote Einträge aus der PHPStan-Baseline (`--dry-run` zeigt nur) |

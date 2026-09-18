@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { isNullRef, runTamper } from './tamper-git.mjs'
-import { SOFT_LOCALLY, SOURCE_FILE, analyseDiff, findException, isTestFile, parseDiff } from './tamper.mjs'
+import { PROTECTED_PATHS, SOFT_LOCALLY, SOURCE_FILE, analyseDiff, findException, isTestFile, parseDiff } from './tamper.mjs'
 
 /** Ein echtes Repository mit genau einem Commit — dem Stand nach dem ersten Push. */
 function gitFixture(content) {
@@ -947,4 +947,206 @@ test('Quell- und Testmuster decken alle gepruegten Sprachen ab', () => {
     assert.ok(isTestFile(path), `${path} sollte als Testdatei gelten`)
   }
   assert.ok(!isTestFile('tools/analyse/cli.py'))
+})
+
+// ── Richtungsabhängiger Schutz für Baseline-Dateien ──────────────────────────
+// Eine Baseline-Zeile HINZUFÜGEN schwächt das Gate, eine LÖSCHEN stärkt es.
+// Nur bei Baselines gibt es diese erwünschte Richtung; die übrigen geschützten
+// Pfade bleiben streng.
+
+test('eine Baseline, die nur Zeilen entfernt, ist kein protected.changed', () => {
+  const findings = check(`
+diff --git a/phpstan-baseline.neon b/phpstan-baseline.neon
+--- a/phpstan-baseline.neon
++++ b/phpstan-baseline.neon
+@@ -3,6 +2,0 @@
+-		-
+-			message: '#^Access to an undefined property A\\:\\:\\$x\\.$#'
+-			identifier: property.notFound
+-			count: 1
+-			path: app/A.php
+-
+`)
+  assert.deepEqual(findings, [])
+})
+
+test('eine hinzugefügte Baseline-Zeile wird weiterhin gemeldet', () => {
+  const findings = check(`
+diff --git a/phpstan-baseline.neon b/phpstan-baseline.neon
+--- a/phpstan-baseline.neon
++++ b/phpstan-baseline.neon
+@@ -2,0 +3,5 @@
++		-
++			message: '#^Neuer Fehler\\.$#'
++			identifier: property.notFound
++			count: 1
++			path: app/A.php
+`)
+  assert.deepEqual(rules(findings), ['protected.changed'])
+})
+
+test('ein gesenkter Zähler in der Baseline ist kein Fund', () => {
+  const findings = check(`
+diff --git a/phpstan-baseline.neon b/phpstan-baseline.neon
+--- a/phpstan-baseline.neon
++++ b/phpstan-baseline.neon
+@@ -5,1 +5,1 @@
+-			count: 4
++			count: 2
+`)
+  assert.deepEqual(findings, [])
+})
+
+test('ein angehobener Zähler in der Baseline wird gemeldet', () => {
+  const findings = check(`
+diff --git a/phpstan-baseline.neon b/phpstan-baseline.neon
+--- a/phpstan-baseline.neon
++++ b/phpstan-baseline.neon
+@@ -5,1 +5,1 @@
+-			count: 2
++			count: 4
+`)
+  assert.deepEqual(rules(findings), ['protected.changed'])
+})
+
+test('eine neu angelegte Baseline wird gemeldet', () => {
+  // Alle Zeilen sind hinzugefügt, keine entfernt — das ist kein Schrumpfen.
+  const findings = analyseDiff([
+    {
+      path: 'phpstan-baseline.neon',
+      deleted: false,
+      removed: [],
+      added: ['parameters:', '\tignoreErrors:'].map((text, index) => ({ line: index + 1, text })),
+    },
+  ])
+  assert.deepEqual(rules(findings), ['protected.changed'])
+})
+
+test('eine geänderte Baseline-Zeile mit neuem Inhalt wird gemeldet', () => {
+  // Gleich viele Zeilen raus wie rein, aber das Muster ist ein anderes: damit
+  // deckt die Baseline einen Fehler ab, den sie vorher nicht abdeckte.
+  const findings = check(`
+diff --git a/phpstan-baseline.neon b/phpstan-baseline.neon
+--- a/phpstan-baseline.neon
++++ b/phpstan-baseline.neon
+@@ -4,1 +4,1 @@
+-			message: '#^Alt\\.$#'
++			message: '#^Neu\\.$#'
+`)
+  assert.deepEqual(rules(findings), ['protected.changed'])
+})
+
+test('die Richtungsregel gilt auch für die gitleaks-Baseline, trotz Komma am Zeilenende', () => {
+  // Beim Entfernen des letzten Array-Elements verliert das vorherige sein
+  // Komma. Diese Zeile ist inhaltlich dieselbe und darf nicht als neu zählen.
+  const findings = check(`
+diff --git a/gitleaks-baseline.json b/gitleaks-baseline.json
+--- a/gitleaks-baseline.json
++++ b/gitleaks-baseline.json
+@@ -2,2 +2,1 @@
+-  {"RuleID":"generic-api-key","File":"src/a.ts"},
+-  {"RuleID":"generic-api-key","File":"src/b.ts"}
++  {"RuleID":"generic-api-key","File":"src/a.ts"}
+`)
+  assert.deepEqual(findings, [])
+})
+
+test('die Richtungsregel gilt auch für ESLint-Suppressions', () => {
+  const findings = check(`
+diff --git a/eslint-suppressions.json b/eslint-suppressions.json
+--- a/eslint-suppressions.json
++++ b/eslint-suppressions.json
+@@ -3,1 +3,1 @@
+-      "count": 9
++      "count": 3
+`)
+  assert.deepEqual(findings, [])
+})
+
+test('die übrigen geschützten Pfade kennen keine Richtung', () => {
+  // Ein CI-Workflow oder eine Linter-Konfiguration hat keine erwünschte
+  // Richtung: eine entfernte Zeile kann dort eine Prüfung abschalten.
+  for (const datei of ['.github/workflows/quality.yml', 'quality.yml', 'phpstan.neon', 'pint.json']) {
+    const findings = analyseDiff([
+      { path: datei, deleted: false, added: [], removed: [{ text: '      - run: quality full' }] },
+    ])
+    assert.deepEqual(rules(findings), ['protected.changed'], `${datei} müsste weiterhin melden`)
+  }
+})
+
+/**
+ * Ein echtes Repository mit einer committeten PHPStan-Baseline.
+ * `change` schreibt den neuen Inhalt und committet ihn als zweiten Commit;
+ * geprüft wird dann der Bereich HEAD~1...HEAD — also der CI-Modus, in dem
+ * `protected.changed` bindend ist.
+ */
+function baselineFixture(before, after) {
+  const root = mkdtempSync(join(tmpdir(), 'quality-baseline-'))
+  const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+  git('init', '--quiet')
+  git('config', 'user.email', 'test@example.com')
+  git('config', 'user.name', 'Test')
+  writeFileSync(join(root, 'phpstan-baseline.neon'), before)
+  git('add', '.')
+  git('commit', '--quiet', '-m', 'Baseline')
+  writeFileSync(join(root, 'phpstan-baseline.neon'), after)
+  git('add', '.')
+  git('commit', '--quiet', '-m', 'Baseline geändert')
+  return root
+}
+
+const neonEntry = (message, count = 1) =>
+  ['\t\t-', `\t\t\tmessage: '${message}'`, '\t\t\tidentifier: property.notFound', `\t\t\tcount: ${count}`, '\t\t\tpath: app/A.php'].join('\n')
+
+const neonBaseline = (...entries) => 'parameters:\n\tignoreErrors:\n' + entries.join('\n\n') + '\n'
+
+test('echter Diff: eine HINZUGEFÜGTE Baseline-Zeile meldet in CI weiterhin', () => {
+  // Die Gegenprobe zur Richtungsregel. Sie läuft über git, nicht über einen
+  // von Hand geschriebenen Diff — sonst prüft sie den Parser statt die Regel.
+  const root = baselineFixture(
+    neonBaseline(neonEntry('#^A\\.$#')),
+    neonBaseline(neonEntry('#^A\\.$#'), neonEntry('#^Neu\\.$#'))
+  )
+  try {
+    assert.equal(runTamper({ root, base: 'HEAD~1', quiet: true }), 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('echter Diff: eine ENTFERNTE Baseline-Zeile meldet in CI nicht mehr', () => {
+  const root = baselineFixture(
+    neonBaseline(neonEntry('#^A\\.$#'), neonEntry('#^Tot\\.$#')),
+    neonBaseline(neonEntry('#^A\\.$#'))
+  )
+  try {
+    assert.equal(runTamper({ root, base: 'HEAD~1', quiet: true }), 0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('echter Diff: ein angehobener Zähler meldet in CI weiterhin', () => {
+  const root = baselineFixture(neonBaseline(neonEntry('#^A\\.$#', 1)), neonBaseline(neonEntry('#^A\\.$#', 9)))
+  try {
+    assert.equal(runTamper({ root, base: 'HEAD~1', quiet: true }), 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('echter Diff: ein gesenkter Zähler meldet in CI nicht mehr', () => {
+  const root = baselineFixture(neonBaseline(neonEntry('#^A\\.$#', 9)), neonBaseline(neonEntry('#^A\\.$#', 1)))
+  try {
+    assert.equal(runTamper({ root, base: 'HEAD~1', quiet: true }), 0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('genau die drei Baselines kennen eine Richtung, sonst nichts', () => {
+  // Der Punkt der Änderung ist die Unterscheidung nach Richtung, nicht weniger
+  // Schutz. Diese Zusicherung hält fest, welche Pfade gemeint sind.
+  const richtung = PROTECTED_PATHS.filter((p) => p.shrinkOnly).map((p) => p.label)
+  assert.deepEqual(richtung, ['PHPStan-Baseline', 'gitleaks-Baseline', 'ESLint-Suppressions'])
 })

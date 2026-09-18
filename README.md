@@ -19,14 +19,14 @@ composer require --dev larastan/larastan laravel/pint   # Werkzeuge des laravel-
 JS/TS-Projekt:
 
 ```bash
-npm  install -D github:renestandout/quality#v0.2.6 prettier
-pnpm add     -D github:renestandout/quality#v0.2.6 prettier
+npm  install -D github:renestandout/quality#v0.2.7 prettier
+pnpm add     -D github:renestandout/quality#v0.2.7 prettier
 ```
 
 Python-Projekt — über npm, mit einer `package.json`, die nur dafür da ist:
 
 ```bash
-npm install -D github:renestandout/quality#v0.2.6
+npm install -D github:renestandout/quality#v0.2.7
 pip  install ruff mypy pytest pip-audit
 ```
 
@@ -104,6 +104,7 @@ Schärfe der Regeln, das Level den heute erreichten Stand.
 | `quality task` | alles ausser Build, inklusive Tests; ändert nichts am Code | vor dem Commit |
 | `quality full` | zusätzlich Build | CI |
 | `quality audit` | Bestandsaufnahme, ändert nichts | vor dem Onboarding, danach periodisch |
+| `quality prune` | schrumpft die PHPStan-Baseline | wenn PHPStan `ignore.unmatched` meldet |
 
 `fix` und `fast` beschränken sich auf Dateien, die sich gegenüber `HEAD`
 unterscheiden; `--all` prüft alles, `--files a,b` gibt sie explizit vor.
@@ -220,6 +221,54 @@ Bestand ist das der falsche Start: mypy kennt keine Baseline, mit der sich die
 Fundzahl einfrieren liesse. Dort gilt `standard`, und die Strenge steigt, wenn
 jemand die Annotationen nachzieht.
 
+## Baseline schrumpfen: `quality prune`
+
+Eine Baseline hat eine Richtung. Über ihrer Einbindung steht in den Projekten
+die Regel «Bestandsfehler eingefroren — sie schrumpft, sie wächst nicht». Genau
+diese erwünschte Richtung war bis v0.2.6 die teuerste: `phpstan-baseline.neon`
+ist ein geschützter Pfad, und ein Agent, der Code verbessert und damit
+Baseline-Einträge wertlos macht, konnte die toten Zeilen nicht entfernen. Der
+Lauf wurde rot mit `ignore.unmatched`, obwohl kein echter Fehler offen war, und
+das Aufräumen kostete einen menschlichen Eingriff.
+
+```bash
+quality prune             # entfernt die toten Einträge
+quality prune --dry-run   # zeigt nur, was wegfiele
+```
+
+Das Kommando ruft PHPStan einmal über das ganze Projekt auf und liest aus dem
+Bericht genau zwei Aussagen:
+
+- `ignore.unmatched` — der Eintrag trifft nichts mehr. Er wird entfernt.
+- `ignore.count` — der Zähler steht zu hoch. Er wird auf die tatsächliche Zahl
+  gesenkt, nie angehoben.
+
+Alles andere bleibt unangetastet. Geschrieben wird die Datei als Textfilter:
+ganze Eintragsblöcke fallen weg, einzelne `count:`-Zeilen ändern sich, und jede
+überlebende Zeile bleibt Byte für Byte stehen. Damit ist die Ausgabe
+konstruktionsbedingt eine Teilmenge der Eingabe — das Werkzeug kann nur
+schrumpfen, und der entstehende Diff trägt ausschliesslich Entfernungen.
+
+Zwei Sicherungen sind wichtiger als die Bequemlichkeit:
+
+**Ein gescheiterter Lauf schreibt nichts.** Meldet PHPStan einen internen
+Abbruch oder liefert es kein JSON, bleibt die Baseline unverändert. Ein
+abgebrochener Lauf würde lebende Einträge als tot ausweisen.
+
+**Eine Ausnahme ausserhalb der Baseline wird nicht angefasst.** Steht ein
+unerfüllter `ignoreErrors`-Eintrag direkt in der `phpstan.neon`, meldet das
+Kommando ihn und rührt ihn nicht an. Diese Datei ist Gate-Konfiguration.
+
+`reportUnmatchedIgnoredErrors: false` ist ausdrücklich keine Alternative und
+steht deshalb nicht in der Basiskonfiguration. Es nimmt den Drift-Alarm weg,
+und die Baseline veraltet dann still.
+
+Nur PHPStan, mit Absicht. ESLint bringt das Schrumpfen seiner Suppressions
+selbst am Linter mit, und der Linter gehört in diesem Framework dem Projekt.
+Für die gitleaks-Baseline gibt es keine Entsprechung im Werkzeug. Für beide
+Dateien existiert im Bestand heute keine einzige Instanz; der richtungsabhängige
+Schutz unten deckt sie trotzdem ab.
+
 ## Tamper-Check
 
 `quality tamper` sucht im Diff nach Handgriffen, die ein Gate *umgehen* statt
@@ -255,6 +304,41 @@ Gemeldet wird nur, was die Ausnahme weitet: eine hinzugefügte
 demselben Grund wie die Ignore-Dateien nicht unter den geschützten Pfaden. Die
 Baseline hinter `--baseline-path` dagegen schon: sie hält fest, welche Funde
 als bekannt gelten — dieselbe Rolle wie `phpstan-baseline.neon`.
+
+### Baselines: der Schutz kennt die Richtung
+
+Seit v0.2.7 wird eine Änderung an einer Baseline nach ihrer Richtung bewertet.
+Eine Zeile HINZUFÜGEN schwächt das Gate, eine LÖSCHEN stärkt es — beides gleich
+zu behandeln machte den erwünschten Weg zum teuersten.
+
+Eine Änderung an `phpstan-baseline.neon`, `eslint-suppressions.json` oder der
+gitleaks-Baseline ist kein `protected.changed`, wenn sie zwei Bedingungen
+erfüllt:
+
+1. Jede hinzugefügte Zeile steht wörtlich auch unter den entfernten, und nicht
+   häufiger. Damit kann kein Eintrag dazukommen: ein Baseline-Eintrag trägt
+   immer seine eigene `message:`-Zeile, und die wäre neuer Text.
+2. Die Summe der hinzugefügten `count:`-Werte übersteigt die der entfernten
+   nicht. Zähler sind von Bedingung 1 ausgenommen, weil ein gesenkter Zähler
+   zwangsläufig neuen Text bedeutet.
+
+Alles andere an diesen Dateien bleibt gemeldet: ein hinzugefügter Eintrag, ein
+angehobener Zähler, eine neu angelegte Baseline. Die übrigen geschützten Pfade
+— CI-Workflow, `quality.yml`, `phpstan.neon`, Linter-Konfiguration — bleiben
+unverändert streng. Dort gibt es keine erwünschte Richtung: eine entfernte
+Zeile kann auch eine Prüfung abschalten.
+
+Die Grenze offen benannt: der Vergleich ist wörtlich. Wird eine Baseline
+umformatiert — Tabs zu Leerzeichen, andere Anführungszeichen — gilt jede Zeile
+als neu und die Regel meldet. Das ist Absicht, und `quality prune` erzeugt
+keine Umformatierung.
+
+Der **PreToolUse-Hook macht diese Unterscheidung bewusst nicht mit.** Er lehnt
+jede Änderung an einer Baseline weiter ab, nennt in der Begründung aber
+`quality prune`. Der Grund: Für das Schrumpfen gibt es ein Werkzeug, das den
+Analysator fragt, welche Einträge tot sind. Ein Hand-Edit kann das nicht
+zusichern — «entfernt nur» heisst nicht «entfernt die richtigen». Ein
+richtungsabhängiger Hook wäre ein zweiter, ungeprüfter Weg an derselben Datei.
 
 Lokal (`quality tamper`) wird der uncommittete Stand geprüft, inklusive noch
 nicht erfasster Dateien. In CI kommt der Vergleichsstand aus `--base`.
@@ -305,7 +389,7 @@ Skill, der den Arbeitsablauf und die Grenzen beschreibt.
 
 | Hook | Wann | Was |
 |---|---|---|
-| PreToolUse | vor Edit/Write | verweigert Schreibzugriff auf Baselines, Gate- und Linter-Konfiguration, CI-Workflows |
+| PreToolUse | vor Edit/Write | verweigert Schreibzugriff auf Baselines, Gate- und Linter-Konfiguration, CI-Workflows; bei einer Baseline nennt die Ablehnung `quality prune` |
 | PostToolUse | nach jedem Edit | formatiert und lintet **die eine** geänderte Datei, meldet Fundstellen zurück |
 | Stop | vor Task-Abschluss | führt `quality fast` aus und blockiert, solange etwas rot ist |
 

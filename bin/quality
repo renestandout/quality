@@ -29,6 +29,12 @@ Einstieg in ein bestehendes Projekt
                  Ändert nichts und blockiert nie. ${c.dim('(dauert Minuten)')}
   ${c.bold('quality init')}   schreibt die vorgeschlagene quality.yml und fehlende phpstan.neon
 
+Baseline pflegen
+  ${c.bold('quality prune')}  entfernt aus phpstan-baseline.neon die Einträge, für die es
+                 keinen Fehler mehr gibt. Kann konstruktionsbedingt nur
+                 schrumpfen — und ist damit der Weg, den ein Agent nehmen darf,
+                 wo ein Edit an der Datei gesperrt ist.
+
 Optionen
   --files <a,b>   Dateien explizit angeben statt aus git zu ermitteln
   --only <a,b>    nur diese Schritte der Stufe ausführen, Rest weglassen
@@ -44,6 +50,7 @@ Optionen
   ${c.dim('init:')}  --from <datei>   Empfehlung aus "quality audit --json" übernehmen
           --dry-run        nur zeigen, was geschrieben würde
           --force          bestehende Dateien überschreiben
+  ${c.dim('prune:')} --dry-run        nur zeigen, was entfernt würde
 `
 }
 
@@ -75,6 +82,16 @@ async function runAuditCommand(options) {
   }
   // Report-only: ein Audit meldet einen Befund, kein Urteil.
   return 0
+}
+
+/**
+ * `quality prune` — Gegenstück zur Baseline-Einbindung: sie schrumpft, sie
+ * wächst nicht. Braucht die quality.yml, weil das PHPStan-Level und die
+ * Komponenten daraus kommen.
+ */
+async function runPruneCommand(options) {
+  const { runPrune } = await import('../lib/baseline-run.mjs')
+  return runPrune(loadConfig(), { dryRun: options.dryRun, quiet: options.quiet })
 }
 
 async function runInitCommand(options) {
@@ -148,9 +165,12 @@ async function main() {
   }
 
   // audit und init laufen ohne quality.yml — sie sind ja dafür da, sie zu erzeugen.
+  // prune braucht sie, ist aber ebenso keine Prüfstufe: es ändert eine Datei.
   if (COMMANDS.includes(options.stage)) {
     try {
-      return options.stage === 'audit' ? await runAuditCommand(options) : await runInitCommand(options)
+      if (options.stage === 'audit') return await runAuditCommand(options)
+      if (options.stage === 'prune') return await runPruneCommand(options)
+      return await runInitCommand(options)
     } catch (err) {
       process.stderr.write(c.red(`${err.message}\n`))
       return 2

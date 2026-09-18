@@ -83,9 +83,11 @@ export const PROTECTED_PATHS = [
   // Der CI-Workflow steht zuerst: eine Datei wie .github/workflows/quality.yml
   // ist ein Workflow und keine Quality-Konfiguration, auch wenn sie so heisst.
   { pattern: /^\.github\/workflows\//, label: 'CI-Workflow' },
-  { pattern: /(^|\/)phpstan-baseline\.neon$/, label: 'PHPStan-Baseline' },
-  { pattern: /(^|\/)\.?gitleaks[-.]baseline\.json$/, label: 'gitleaks-Baseline' },
-  { pattern: /(^|\/)eslint-suppressions\.json$/, label: 'ESLint-Suppressions' },
+  // `shrinkOnly` markiert die Baselines: nur bei ihnen hat eine Änderung eine
+  // erwünschte Richtung. Siehe `baselineOnlyShrinks`.
+  { pattern: /(^|\/)phpstan-baseline\.neon$/, label: 'PHPStan-Baseline', shrinkOnly: true },
+  { pattern: /(^|\/)\.?gitleaks[-.]baseline\.json$/, label: 'gitleaks-Baseline', shrinkOnly: true },
+  { pattern: /(^|\/)eslint-suppressions\.json$/, label: 'ESLint-Suppressions', shrinkOnly: true },
   { pattern: /^quality\.ya?ml$/, label: 'Quality-Konfiguration' },
   { pattern: /(^|\/)phpstan\.neon(\.dist)?$/, label: 'PHPStan-Konfiguration' },
   { pattern: /(^|\/)pint\.json$/, label: 'Pint-Konfiguration' },
@@ -349,6 +351,78 @@ function scanGitleaksConfig(file) {
 }
 
 /**
+ * Zeile eines Zählers — im Neon-Format `count: 3`, im JSON-Format `"count": 3,`.
+ */
+const COUNT_LINE = /^[ \t]*"?count"?[ \t]*:[ \t]*(\d+),?[ \t]*$/
+
+/**
+ * Inhaltliche Form einer Diff-Zeile für den Mengenvergleich.
+ *
+ * Das Komma am Zeilenende fällt weg: entfernt man das letzte Element eines
+ * JSON-Arrays, verliert das vorherige sein Komma. Diese Zeile ist inhaltlich
+ * dieselbe und darf nicht als neue zählen.
+ */
+const shape = (text) => text.replace(/,[ \t]*$/, '')
+
+/**
+ * Entfernt diese Baseline-Änderung nur, oder nimmt sie etwas auf?
+ *
+ * Der Grund für die Unterscheidung: Eine Baseline-Zeile HINZUFÜGEN schwächt
+ * das Gate, eine LÖSCHEN stärkt es. Über der Baseline-Einbindung steht in den
+ * Projekten die Regel «sie schrumpft, sie wächst nicht» — genau diese
+ * erwünschte Richtung kostete bis v0.2.7 einen menschlichen Eingriff, weil
+ * beides gleich behandelt wurde.
+ *
+ * Zwei Bedingungen, beide nötig:
+ *
+ *   1. Jede hinzugefügte Zeile steht wörtlich auch unter den entfernten, und
+ *      nicht häufiger. Damit kann kein Eintrag dazukommen: ein Baseline-Eintrag
+ *      trägt immer seine eigene `message:`-Zeile, und die wäre neuer Text.
+ *   2. Die Summe der hinzugefügten Zähler übersteigt die der entfernten nicht.
+ *
+ * Zähler sind von Bedingung 1 ausgenommen, weil ein gesenkter Zähler
+ * zwangsläufig eine Zeile mit neuem Text ist. Bedingung 2 tritt an ihre Stelle.
+ *
+ * Leerzeilen zählen nicht mit: sie tragen keinen Inhalt, und bei `--unified=0`
+ * wandern sie mit jedem entfernten Block.
+ *
+ * Die Grenze offen benannt: der Vergleich ist wörtlich. Wird eine Baseline
+ * umformatiert — Tabs zu Leerzeichen, andere Anführungszeichen — gilt jede
+ * Zeile als neu, und die Regel meldet. Das ist Absicht: eine Umformatierung ist
+ * kein Schrumpfen, und `quality prune` erzeugt sie nicht.
+ */
+export function baselineOnlyShrinks(file) {
+  const content = (lines) => (lines ?? []).map((entry) => entry.text).filter((text) => text.trim() !== '')
+  const added = content(file.added)
+  const removed = content(file.removed)
+
+  const sumCounts = (lines) =>
+    lines.reduce((total, text) => {
+      const hit = COUNT_LINE.exec(text)
+      return hit ? total + Number.parseInt(hit[1], 10) : total
+    }, 0)
+  if (sumCounts(added) > sumCounts(removed)) return false
+
+  // Mehrmengen-Vergleich, nicht Mengen-Vergleich: eine Zeile, die doppelt so
+  // oft hinzukommt wie sie verschwindet, vervielfacht einen Eintrag.
+  const pool = new Map()
+  for (const text of removed) {
+    if (COUNT_LINE.test(text)) continue
+    const key = shape(text)
+    pool.set(key, (pool.get(key) ?? 0) + 1)
+  }
+  for (const text of added) {
+    if (COUNT_LINE.test(text)) continue
+    const key = shape(text)
+    const left = pool.get(key) ?? 0
+    if (left === 0) return false
+    pool.set(key, left - 1)
+  }
+
+  return true
+}
+
+/**
  * Bewertet einen geparsten Diff.
  *
  * `botAuthor` unterdrückt zwei Regeln: die Lockfile-Regel — ein Renovate-Lauf
@@ -389,8 +463,11 @@ export function analyseDiff(files, { botAuthor = false, ignorePaths = [] } = {})
       continue
     }
 
-    for (const { pattern, label } of botAuthor ? [] : PROTECTED_PATHS) {
+    for (const { pattern, label, shrinkOnly } of botAuthor ? [] : PROTECTED_PATHS) {
       if (pattern.test(file.path)) {
+        // Nur Baselines haben eine erwünschte Richtung. Schrumpft die Datei,
+        // ist das kein Verschieben des Gates, sondern das Gegenteil.
+        if (shrinkOnly && baselineOnlyShrinks(file)) break
         findings.push({
           rule: 'protected.changed',
           // Nachgestellt, damit die Meldung unabhängig vom Genus stimmt:
