@@ -111,6 +111,38 @@ unterscheiden; `--all` prüft alles, `--files a,b` gibt sie explizit vor.
 Ab `task` wird nur noch geprüft, nicht mehr geschrieben — was in CI rot wird,
 soll dort nicht heimlich repariert werden.
 
+### Wofür ein Zweig einsteht: `--base`
+
+`--base <ref>` nennt den Stand, von dem dieser Zweig abzweigt. Der Bereich
+`<ref>...HEAD` plus der uncommittete Stand ist die Arbeit dieses Zweigs. Alles
+andere ist Bestand.
+
+In `task` und `full` teilt der fmt-Schritt sich danach in zwei Läufe:
+
+- Der erste prüft die Dateien des Zweigs. Er blockiert wie bisher.
+- Der zweite prüft die ganze Komponente. Er meldet nur, zählt nicht in der
+  Summe und ändert den Exit-Code nicht.
+
+Der Anlass: ein Worktree zweigt von `main` ab. Danach landet auf `main` ein
+Format-Fix. Der Zweig trägt die alte Fassung weiter, ohne sie angefasst zu
+haben — und bekam dafür ein rotes Gate. Grün zu bekommen war es nur, indem
+jemand fremde Arbeit anfasst, und genau das erzeugt einen Merge-Konflikt.
+
+Ohne `--base` bleibt die ganze Fläche hart. quality rät die Basis nicht: eine
+Schärfe, die davon abhängt, ob sich ein Branchname gerade auflösen lässt, wäre
+keine Zusage. Eine CI ohne `--base` prüft deshalb so streng wie bisher.
+
+`fix` und `fast` ignorieren `--base`. Sie prüfen den uncommitteten Stand; die
+Frage nach dem Anteil eines Zweigs stellt sich dort nicht.
+
+```bash
+quality full --base "origin/$GITHUB_BASE_REF"   # Pull Request
+quality task --base main                        # lokal im Worktree
+```
+
+Der Tamper-Check liest `--base` weiter wie bisher: mit Basis der Bereich
+`base...HEAD`, ohne Basis der lokale Modus.
+
 ### Eine Stufe aufteilen: `--only`
 
 `--only` sagt, was von einer Stufe übrig bleibt. Erlaubt sind die Schritte

@@ -35,9 +35,17 @@ und blockiert den Abschluss, solange etwas rot ist. Läuft es dreimal
 erfolglos, wird es durchgelassen — dann berichte dem Menschen, was rot bleibt,
 statt es zu verschweigen.
 
-**5. Vor dem Commit: `quality task` und `/code-review` auf den Diff.**
+**5. Vor dem Commit: `quality task --base main` und `/code-review` auf den Diff.**
 Das Review läuft in einem eigenen Kontext, weil du auf deine eigene Arbeit
 systematisch blind bist.
+
+`--base main` nennt den Stand, von dem dein Zweig abzweigt. Der fmt-Schritt
+blockiert dann nur für deinen eigenen Diff. Eine Formatierung, die auf `main`
+längst behoben ist und die dein Zweig nur noch in der alten Fassung trägt,
+erscheint als Hinweis statt als Fehler. Fasse sie nicht an: beim Merge
+verschwindet sie von selbst, und eine Änderung daran erzeugt einen Konflikt.
+Ohne `--base` prüft `task` die ganze Fläche hart — das ist der Normalfall
+ausserhalb eines Worktrees.
 
 ## Was du nicht tust
 
@@ -110,6 +118,6 @@ Vielfaches, weil niemand mehr weiss, dass er da ist.
 |---|---|
 | `quality fix` | läuft automatisch nach jedem Edit |
 | `quality fast` | vor Task-Abschluss (läuft automatisch) |
-| `quality task` | vor dem Commit, inklusive Tests |
+| `quality task --base main` | vor dem Commit, inklusive Tests; `--base` im Worktree |
 | `quality tamper` | zeigt, was am aktuellen Stand ein Gate umgehen würde |
 | `quality prune` | entfernt tote Einträge aus der PHPStan-Baseline (`--dry-run` zeigt nur) |

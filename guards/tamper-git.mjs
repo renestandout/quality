@@ -19,7 +19,7 @@ function git(args, cwd) {
  * actions/checkout standardmässig nur einen einzelnen Commit holt — und nach
  * einem Force-Push existiert der Stand vor dem Push nicht mehr.
  */
-function assertRevisionExists(ref, root) {
+export function assertRevisionExists(ref, root) {
   try {
     execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: root, stdio: 'ignore' })
   } catch {

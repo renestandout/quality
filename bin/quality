@@ -8,7 +8,7 @@ import { ConfigError, loadConfig } from '../lib/config.mjs'
 import { filesForComponent, filesForVerb } from '../lib/files.mjs'
 import { c, runSteps, summarize } from '../lib/run.mjs'
 import { YamlError } from '../lib/yaml.mjs'
-import { hasCommit, runTamper } from '../guards/tamper-git.mjs'
+import { assertRevisionExists, hasCommit, isNullRef, runTamper } from '../guards/tamper-git.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
@@ -39,7 +39,12 @@ Optionen
   --files <a,b>   Dateien explizit angeben statt aus git zu ermitteln
   --only <a,b>    nur diese Schritte der Stufe ausführen, Rest weglassen
                   ${c.dim(`(${ONLY_NAMES.join(', ')})`)}
-  --base <ref>    Diff gegen diesen Stand prüfen (in CI: der Zielbranch des PR)
+  --base <ref>    Wofür dieser Zweig einsteht: der Bereich <ref>...HEAD plus der
+                  uncommittete Stand (in CI: der Zielbranch des PR).
+                  ${c.dim('task/full: der fmt-Schritt blockiert nur noch dafür; eine')}
+                  ${c.dim('Formatierung ausserhalb bleibt sichtbar, aber als Hinweis.')}
+                  ${c.dim('fix/fast: ohne Wirkung — sie prüfen den uncommitteten Stand.')}
+                  ${c.dim('tamper: der geprüfte Bereich. Ohne --base: der lokale Modus.')}
   --all           alle Komponenten prüfen, auch unveränderte
   --quiet         Ausgabe der Werkzeuge unterdrücken, nur Zusammenfassung
   --help          diese Hilfe
@@ -144,6 +149,43 @@ function changedFiles(root) {
   return [...new Set(files)].filter((f) => existsSync(join(root, f)))
 }
 
+/**
+ * Dateien, für die dieser Zweig einsteht: der Bereich `base...HEAD` plus der
+ * uncommittete Stand. Alles andere ist Bestand — es lag schon so da, als der
+ * Zweig entstand.
+ *
+ * Der Anlass: ein Worktree zweigt von main ab, danach landet auf main ein
+ * Format-Fix. Der Zweig trägt die alte Fassung weiter, ohne sie angefasst zu
+ * haben, und bekam dafür ein rotes Gate. Grün zu bekommen war es nur, indem
+ * jemand fremde Arbeit anfasst — was beim Merge kollidiert.
+ *
+ * Drei Punkte statt zwei, wie beim Tamper-Check: gefragt ist, was auf diesem
+ * Zweig entstand, nicht was sich seither auf main verändert hat.
+ */
+function branchFiles(root, base) {
+  assertRevisionExists(base, root)
+  let range
+  try {
+    range = execFileSync('git', ['diff', '--name-only', '--diff-filter=ACMR', `${base}...HEAD`], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .split('\n')
+      .filter(Boolean)
+  } catch {
+    // Hier nicht auf eine leere Liste zurückfallen: "ich kann es nicht sagen"
+    // wäre dann als "nichts geändert" gelesen, und der fmt-Schritt erklärte
+    // die ganze Komponente zum Bestand. Ein Gate, das bei Unklarheit lockerer
+    // wird, ist keine Zusage.
+    throw new Error(
+      `Kein gemeinsamer Stand zwischen "${base}" und HEAD — der Bereich ${base}...HEAD ist nicht bestimmbar.\n` +
+        '  In CI fehlt dafür meist die Vorgeschichte: actions/checkout braucht dann fetch-depth: 0.'
+    )
+  }
+  return [...new Set([...range, ...changedFiles(root)])].filter((f) => existsSync(join(root, f)))
+}
+
 async function loadStack(name) {
   const file = join(PKG_ROOT, 'stacks', `${name}.mjs`)
   if (!existsSync(file)) throw new Error(`Kein Adapter für stack "${name}" gefunden (erwartet: ${file}).`)
@@ -209,6 +251,26 @@ async function main() {
   const useChanged = stage.changedOnly && !options.all
   const files = options.files ?? (useChanged ? changedFiles(config.root) : null)
 
+  /*
+   * Was --base in einer vollflächigen Stufe bedeutet.
+   *
+   * `fix` und `fast` schauen auf den noch nicht committeten Stand — sie sind
+   * die Stufen während der Arbeit, und ihre Dateiliste ist schon eng. `task`
+   * und `full` beurteilen dagegen die ganze Komponente. Nur sie brauchen die
+   * Antwort auf die Frage, welcher Teil dieser Fläche diesem Zweig gehört.
+   *
+   * Ohne --base gibt es diese Antwort nicht. Dann gehört dem Zweig alles —
+   * nur so bleibt eine CI, die --base nicht mitgibt, so streng wie bisher.
+   * Geraten wird die Basis nicht: eine Schärfe, die davon abhängt, ob sich ein
+   * Branchname lokal auflösen lässt, wäre keine Zusage.
+   *
+   * Mit --files hat der Aufrufer die Fläche bereits selbst bestimmt; eine
+   * zweite Einteilung darüber wäre eine Antwort auf eine Frage, die niemand
+   * gestellt hat.
+   */
+  const splitFmt = !useChanged && options.base && !isNullRef(options.base) && !options.files
+  const owned = splitFmt ? branchFiles(config.root, options.base) : null
+
   const steps = []
   for (const component of config.components) {
     const stack = await loadStack(component.stack)
@@ -233,7 +295,39 @@ async function main() {
       full: !stage.changedOnly,
     }
 
+    const ownedFiles = owned ? filesForComponent(enriched, owned, config.root) : null
+
     for (const verb of plan.verbs) {
+      /*
+       * Der fmt-Schritt zerfällt mit --base in zwei Läufe.
+       *
+       * Der erste prüft die Dateien dieses Zweigs und blockiert wie bisher.
+       * Der zweite prüft die ganze Komponente und meldet nur. So bleibt eine
+       * Altlast bei jedem Lauf sichtbar, ohne den Task rot zu machen, der sie
+       * nicht verursacht hat — und ohne dass jemand fremde Arbeit anfassen
+       * muss, um ein Gate zu passieren.
+       *
+       * Zwei Läufe statt eines mit ausgewerteter Ausgabe: prettier, pint und
+       * ruff melden ihre Funde je anders. Ein Parser je Werkzeug wäre drei
+       * Stellen, die stillschweigend falsch werden können, wenn ein Werkzeug
+       * sein Format ändert.
+       */
+      if (verb === 'fmt' && ownedFiles) {
+        const own = filesForVerb(enriched.kind, 'fmt', ownedFiles)
+        if (own.length > 0) {
+          const hart = stack.fmt?.({ ...ctx, files: own })
+          if (hart) steps.push(hart)
+        }
+        const bestand = stack.fmt?.({ ...ctx, files: null })
+        if (bestand) {
+          bestand.soft = true
+          bestand.name = `${bestand.name} — ganze Fläche`
+          bestand.note = `blockiert nicht — hart geprüft wird nur ${options.base}...HEAD`
+          steps.push(bestand)
+        }
+        continue
+      }
+
       // Die Typprüfung braucht immer das ganze Projekt: eine einzelne Datei
       // ohne ihren Kontext zu prüfen erzeugt Fehler, die es gar nicht gibt.
       // Gilt für mypy genauso wie für tsc — nur PHPStan kommt mit einer

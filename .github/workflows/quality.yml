@@ -18,8 +18,20 @@ jobs:
         with:
           node-version: '22'
 
+      # Bei einem Pull Request steht der Zweig nur für seinen eigenen Diff ein:
+      # eine Formatierung, die der Zielbranch längst behoben hat, blockiert ihn
+      # nicht mehr. Sichtbar bleibt sie als Hinweis. Beim Push auf den
+      # Standardbranch bewusst ohne --base: dort gilt die ganze Fläche, sonst
+      # dürfte main unbemerkt auseinanderlaufen.
       - name: Qualitätsprüfungen
-        run: node bin/quality full
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+        run: |
+          if [ -n "$BASE" ]; then
+            node bin/quality full --base "$BASE"
+          else
+            node bin/quality full
+          fi
 
       # Läuft auch beim Push auf den Standardbranch: `cc --abschliessen` merged
       # lokal und pusht die Basis — ohne diesen Zweig sähe der Check den
