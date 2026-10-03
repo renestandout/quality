@@ -121,23 +121,46 @@ jede Runner-Instanz gehört zu genau einem Repository. Verteilung:
 
 | Repository | Instanzen | Grund |
 |---|---|---|
-| renestandout/rankscan | 1 | siehe unten — parallel ist hier langsamer |
+| renestandout/rankscan | 2 | `tests` belegt eine Instanz rund 10 Minuten, siehe unten |
 | renestandout/adboard | 1 | zwei kurze Jobs |
 | renestandout/rankscanpage | 1 | zwei kurze Jobs |
 | renestandout/rankscanmautic | 1 | shellcheck + gitleaks, Sekunden |
 
-**Eine Instanz je Repo, nicht zwei.** Der naheliegende Gedanke ist, mehrere
-Runner zu registrieren, damit die Jobs eines Laufs parallel starten. Gemessen
-am 18.08.2026 mit rankscan auf zwei Kernen: `quality` braucht allein 6:38 und
+**Eine Instanz je Repo, ausser bei rankscan.** Der naheliegende Gedanke ist,
+mehrere Runner zu registrieren, damit die Jobs eines Laufs parallel starten.
+Auf cpx22 war das falsch. Gemessen am 18.08.2026 mit rankscan auf zwei Kernen: `quality` braucht allein 6:38 und
 neben laufenden Tests über 30 Minuten — Faktor fünf, nicht Faktor zwei. Beide
 Jobs sind CPU-gebunden, bremsen sich gegenseitig aus und drücken zusätzlich
 in den Swap. Seriell auf der vollen Maschine ist die Gesamtzeit kürzer, jeder
 Job bleibt in seinem Timeout, und die Läufe werden vorhersagbar.
 
 Mehr Parallelität lohnt erst mit mehr Kernen als Jobs. Seit dem 03.10.2026
-hat die Maschine vier Kerne und 8 GB. Eine zweite rankscan-Instanz ist damit
-denkbar, aber nicht gemessen. Bis eine Messung vorliegt, bleibt es bei einer
-Instanz je Repo. Zu bedenken: alle Repos teilen dieselben vier Kerne.
+hat die Maschine vier Kerne und 8 GB, und rankscan hat zwei Instanzen. Der
+Grund: `tests` lief allein rund 11 Minuten, und PHPUnit nutzt dabei nur einen
+Kern. Vorher wartete der Required Check `quality` im Schnitt 8 Minuten hinter
+`tests` (15 Läufe ab 12.09.2026, Spitze 15 Minuten).
+
+Gemessen am 03.10.2026 auf cpx32, main-Lauf 37148357345 mit zwei Instanzen:
+
+| Job | Wartezeit | Laufzeit | vorher Ø (eine Instanz, cpx22) |
+|---|---|---|---|
+| `tests` | 0:02 | 10:07 | 11:26 |
+| `quality` | 0:02 | 1:06 | 8:16 Wartezeit + 1:17 |
+| `prod-build` | 2:11 | 0:47 | 7:28 Wartezeit + 0:50 |
+| `audit` | 4:00 | 0:23 | 10:03 Wartezeit + 0:26 |
+
+`tests` wurde neben den anderen Jobs nicht langsamer. Auf der VM lag die Last
+bei höchstens 4,8, der Speicher bei höchstens 3,4 GB, der Swap blieb leer.
+Der Lauf ist nach der Dauer von `tests` fertig. Der Rückbau, falls nötig:
+`./svc.sh uninstall` und `./config.sh remove` in `/opt/gh-runner/rankscan/2`.
+
+Die anderen Repos warten im Schnitt höchstens zwei Minuten und behalten eine
+Instanz. Alle Repos teilen dieselben vier Kerne.
+
+Der grösste offene Hebel liegt in rankscan selbst: PHPUnit parallel
+(`php artisan test --parallel` mit paratest). Dabei ist zu beachten, dass
+`tests/bootstrap.php` nur die Datenbank `db_test` zulässt. Laravel legt im
+Parallelbetrieb aber `db_test_1` bis `db_test_N` an.
 
 ## Gemessene Laufzeiten
 
