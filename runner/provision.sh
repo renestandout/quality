@@ -33,7 +33,7 @@ fi
 echo "==> Basispakete"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-# shellcheck: auf GitHub-Hosted-Runnern vorinstalliert, hier nicht. Der
+# Das Paket shellcheck ist auf GitHub-Hosted-Runnern vorinstalliert, hier nicht. Der
 # mautic-Workflow ruft es direkt auf und scheitert sonst am fehlenden Befehl.
 apt-get install -y -qq git curl jq unzip ca-certificates software-properties-common shellcheck
 
@@ -106,9 +106,14 @@ chmod 0440 /etc/sudoers.d/runner
 visudo -c -f /etc/sudoers.d/runner >/dev/null
 
 echo "==> Docker-Aufräum-Cron (wöchentlich)"
+# system prune räumt Volumes nicht ab, und "until" lässt sich mit --volumes
+# nicht kombinieren. Jeder services:-Container (postgres, redis) hinterlässt
+# aber ein anonymes Volume. Am 03.10.2026 lagen 634 davon mit 29 GB auf der
+# Platte. volume prune löscht ohne -a nur anonyme, unbenutzte Volumes.
 cat >/etc/cron.weekly/docker-prune <<'EOF'
 #!/bin/sh
 docker system prune -af --filter "until=168h" >/dev/null 2>&1
+docker volume prune -f >/dev/null 2>&1
 EOF
 chmod +x /etc/cron.weekly/docker-prune
 

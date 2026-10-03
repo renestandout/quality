@@ -1,6 +1,6 @@
 # Self-hosted Runner für die Quality-Gates
 
-Stand: 2026-08-18. Kontext: die Quality-Workflows verbrauchten 71 % der
+Stand: 2026-08-18, VM-Angaben 2026-10-03. Kontext: die Quality-Workflows verbrauchten 71 % der
 GitHub-Actions-Minuten (Messung in
 `adboard/docs/2026-08-18_github-actions-verbrauch.md`). Self-hosted Runner
 kosten bei GitHub null Minuten, auch in privaten Repos. Workflows, Required
@@ -71,10 +71,17 @@ burstbar.
 ## Die VM
 
 Hetzner Cloud `quality-runner`, Falkenstein (fsn1), Ubuntu 24.04,
-Typ `cpx22` — 2 vCPU / 4 GB / 80 GB, 19,49 EUR/Mt. IP **178.105.222.60**,
+Typ `cpx32` — 4 vCPU (AMD EPYC Genoa) / 8 GB, 35,49 EUR/Mt. IP **178.105.222.60**,
 User `root`, Key `~/.ssh/id_ed25519`. Firewall `runner-ssh-only` lässt nur
 Port 22 herein; der Runner selbst pollt GitHub über ausgehendes HTTPS und
 braucht keinen offenen Port.
+
+**Die Platte ist kleiner als der Typ.** Am 03.10.2026 lief das Hochstufen von
+`cpx22` auf `cpx32` ohne Disk-Upgrade. Der Typ nennt 160 GB, die VM hat
+weiterhin 80 GB (`primary_disk_size: 80`). Das hält den Rückweg auf `cpx22`
+offen, denn eine grössere Disk lässt sich nicht mehr verkleinern. Wird der
+Platz knapp, geht es nur mit einem zweiten Rescale samt Disk-Upgrade und
+danach `growpart /dev/sda 1 && resize2fs /dev/sda1`.
 
 Verwaltung über `hcloud` (Kontext `standout-ci`). Der API-Token braucht
 **Read & Write** — mit einem Lesetoken schlägt jedes Anlegen mit
@@ -127,8 +134,10 @@ Jobs sind CPU-gebunden, bremsen sich gegenseitig aus und drücken zusätzlich
 in den Swap. Seriell auf der vollen Maschine ist die Gesamtzeit kürzer, jeder
 Job bleibt in seinem Timeout, und die Läufe werden vorhersagbar.
 
-Mehr Parallelität lohnt erst mit mehr Kernen als Jobs. Solange die Maschine
-zwei hat, bleibt es bei einer Instanz je Repo.
+Mehr Parallelität lohnt erst mit mehr Kernen als Jobs. Seit dem 03.10.2026
+hat die Maschine vier Kerne und 8 GB. Eine zweite rankscan-Instanz ist damit
+denkbar, aber nicht gemessen. Bis eine Messung vorliegt, bleibt es bei einer
+Instanz je Repo. Zu bedenken: alle Repos teilen dieselben vier Kerne.
 
 ## Gemessene Laufzeiten
 
@@ -283,3 +292,9 @@ Das Freikontingent (2'000 min/Mt.) trägt den Übergang.
 **Wartung:** der Runner aktualisiert sich selbst. Docker räumt ein
 wöchentlicher Prune-Cron ab (legt `provision.sh` an). Ubuntu patcht über
 unattended-upgrades.
+
+**Anonyme Volumes wachsen still.** `docker system prune` löscht keine Volumes.
+Jeder `services:`-Container hinterlässt aber eines. Am 03.10.2026 lagen 634
+davon mit 29 GB auf der 80-GB-Platte. Seither ruft der Cron zusätzlich
+`docker volume prune -f` auf. Prüfen lässt sich der Stand mit
+`docker system df`.
