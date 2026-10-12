@@ -19,14 +19,14 @@ composer require --dev larastan/larastan laravel/pint   # Werkzeuge des laravel-
 JS/TS-Projekt:
 
 ```bash
-npm  install -D github:renestandout/quality#v0.2.8 prettier
-pnpm add     -D github:renestandout/quality#v0.2.8 prettier
+npm  install -D github:renestandout/quality#v0.2.9 prettier
+pnpm add     -D github:renestandout/quality#v0.2.9 prettier
 ```
 
 Python-Projekt — über npm, mit einer `package.json`, die nur dafür da ist:
 
 ```bash
-npm install -D github:renestandout/quality#v0.2.8
+npm install -D github:renestandout/quality#v0.2.9
 pip  install ruff mypy pytest pip-audit
 ```
 
@@ -507,9 +507,23 @@ projektübergreifend zählt sie nicht genug, um dafür halbe Codebasen anzufasse
 ## Entwicklung
 
 ```bash
-npm test
+npm ci
+node bin/quality full
 ```
 
-Der Runner kommt ohne Laufzeit-Abhängigkeiten aus — bei einer
-Composer-Installation liegt kein `node_modules` daneben. Deshalb auch der
-eigene, bewusst eng begrenzte YAML-Leser in `lib/yaml.mjs`.
+Das Repo prüft sich mit seinem eigenen Gate. `full` führt prettier, oxlint,
+tsc und die Tests aus. Ohne `npm ci` fehlen die drei Werkzeuge, und das Gate
+überspringt ihre Schritte. Die CI führt `npm ci` deshalb vor dem Gate aus.
+
+- **Typen:** tsc prüft die `.mjs`-Dateien über `checkJs` mit
+  `tsconfig.strict.json`. Die Typen stehen als JSDoc im Code; gemeinsame
+  Formen liegen in `lib/types.mjs`.
+- **CLI:** Der Code steht in `bin/quality.mjs`. `bin/quality` ist nur der
+  Starter ohne Endung, denn tsc und oxlint erkennen Dateien ohne Endung nicht.
+- **Build:** Der Schritt entfällt. Das Paket ist reines ESM, Node führt es
+  ohne Übersetzung aus.
+
+Die Werkzeuge sind devDependencies. Der Runner selbst kommt ohne
+Laufzeit-Abhängigkeiten aus — bei einer Composer-Installation liegt kein
+`node_modules` daneben. Deshalb auch der eigene, bewusst eng begrenzte
+YAML-Leser in `lib/yaml.mjs`.

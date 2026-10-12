@@ -1,6 +1,6 @@
 {
   "name": "@standout/quality",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Gemeinsame Code-Quality-Werkzeuge für Standout-Projekte: Runner, Stack-Adapter und Basiskonfiguration.",
   "license": "UNLICENSED",
   "private": false,
@@ -29,5 +29,11 @@
   },
   "scripts": {
     "test": "node --test 'bin/*.test.mjs' 'lib/*.test.mjs' 'guards/*.test.mjs' 'configs/*.test.mjs' 'hooks/*.test.mjs'"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "oxlint": "^1.87.0",
+    "prettier": "3.9.10",
+    "typescript": "^5.9.3"
   }
 }
