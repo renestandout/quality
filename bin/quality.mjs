@@ -1,0 +1,435 @@
+import { execFileSync } from 'node:child_process'
+import { existsSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { COMMANDS, ONLY_NAMES, STAGES, parseArgs, planFor } from '../lib/args.mjs'
+import { ConfigError, loadConfig } from '../lib/config.mjs'
+import { filesForComponent, filesForVerb } from '../lib/files.mjs'
+import { c, runSteps, summarize } from '../lib/run.mjs'
+import { YamlError } from '../lib/yaml.mjs'
+import { assertRevisionExists, hasCommit, isNullRef, runTamper } from '../guards/tamper-git.mjs'
+
+/** @import { Options } from '../lib/args.mjs' */
+/** @import { Stack } from '../lib/types.mjs' */
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const PKG_ROOT = resolve(HERE, '..')
+
+/**
+ * Die Meldung eines abgefangenen Fehlers. Der Code hier wirft Error-Objekte.
+ * Alles andere erscheint als Text statt als "undefined".
+ *
+ * @param {unknown} err
+ * @returns {string}
+ */
+const messageOf = (err) => (err instanceof Error ? err.message : String(err))
+
+function usage() {
+  return `${c.bold('quality')} — gemeinsame Qualitätsprüfungen für Standout-Projekte
+
+Prüfstufen
+  ${c.bold('quality fix')}    Formatierung und Linter auf geänderte Dateien (für Editor-Hooks)
+  ${c.bold('quality fast')}   fix + Typprüfung, nur betroffene Komponenten  ${c.dim('(Ziel: < 30 s)')}
+  ${c.bold('quality task')}   volle Prüfung inklusive Tests, ohne Änderungen am Code
+  ${c.bold('quality full')}   task + Build — die Stufe für CI
+  ${c.bold('quality tamper')} nur den Tamper-Check: sucht im Diff nach Mustern, die ein Gate
+                 umgehen statt erfüllen (Suppressions, stillgelegte Tests, Baselines)
+
+Einstieg in ein bestehendes Projekt
+  ${c.bold('quality audit')}  misst den Ist-Zustand und schlägt eine Konfiguration vor.
+                 Ändert nichts und blockiert nie. ${c.dim('(dauert Minuten)')}
+  ${c.bold('quality init')}   schreibt die vorgeschlagene quality.yml und fehlende phpstan.neon
+
+Baseline pflegen
+  ${c.bold('quality prune')}  entfernt aus phpstan-baseline.neon die Einträge, für die es
+                 keinen Fehler mehr gibt. Kann konstruktionsbedingt nur
+                 schrumpfen — und ist damit der Weg, den ein Agent nehmen darf,
+                 wo ein Edit an der Datei gesperrt ist.
+
+Optionen
+  --files <a,b>   Dateien explizit angeben statt aus git zu ermitteln
+  --only <a,b>    nur diese Schritte der Stufe ausführen, Rest weglassen
+                  ${c.dim(`(${ONLY_NAMES.join(', ')})`)}
+  --base <ref>    Wofür dieser Zweig einsteht: der Bereich <ref>...HEAD plus der
+                  uncommittete Stand (in CI: der Zielbranch des PR).
+                  ${c.dim('task/full: der fmt-Schritt blockiert nur noch dafür; eine')}
+                  ${c.dim('Formatierung ausserhalb bleibt sichtbar, aber als Hinweis.')}
+                  ${c.dim('fix/fast: ohne Wirkung — sie prüfen den uncommitteten Stand.')}
+                  ${c.dim('tamper: der geprüfte Bereich. Ohne --base: der lokale Modus.')}
+  --all           alle Komponenten prüfen, auch unveränderte
+  --check         fix/fast: Formatierung nur prüfen, keine Datei ändern
+                  ${c.dim('(task/full prüfen ohnehin nur)')}
+  --quiet         Ausgabe der Werkzeuge unterdrücken, nur Zusammenfassung
+  --help          diese Hilfe
+
+  ${c.dim('audit:')} --json           Bericht als JSON statt Markdown
+          --out <datei>    Bericht zusätzlich in eine Datei schreiben
+          --no-secrets     den gitleaks-Lauf über die Historie überspringen
+  ${c.dim('init:')}  --from <datei>   Empfehlung aus "quality audit --json" übernehmen
+          --dry-run        nur zeigen, was geschrieben würde
+          --force          bestehende Dateien überschreiben
+  ${c.dim('prune:')} --dry-run        nur zeigen, was entfernt würde
+`
+}
+
+/**
+ * Die Wurzel des zu prüfenden Repositories.
+ * Für audit und init gibt es noch keine quality.yml, an der man sie erkennt —
+ * deshalb fragt hier git, und nur ersatzweise gilt das Arbeitsverzeichnis.
+ */
+function repoRoot() {
+  try {
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+  } catch {
+    return process.cwd()
+  }
+}
+
+/** @param {Options} options */
+async function runAuditCommand(options) {
+  const { runAudit } = await import('../lib/audit-run.mjs')
+  const { renderAudit } = await import('../lib/audit-report.mjs')
+  const root = repoRoot()
+  const report = await runAudit(root, { quiet: options.quiet, secrets: options.secrets })
+  const text = options.json
+    ? JSON.stringify(report, null, 2) + '\n'
+    : renderAudit(report, { generatedAt: new Date().toISOString().slice(0, 10) })
+  process.stdout.write(text)
+  if (options.out) {
+    writeFileSync(resolve(root, options.out), text)
+    process.stderr.write(c.dim(`\nBericht geschrieben: ${options.out}\n`))
+  }
+  // Report-only: ein Audit meldet einen Befund, kein Urteil.
+  return 0
+}
+
+/**
+ * `quality prune` — Gegenstück zur Baseline-Einbindung: sie schrumpft, sie
+ * wächst nicht. Braucht die quality.yml, weil das PHPStan-Level und die
+ * Komponenten daraus kommen.
+ */
+async function runPruneCommand(/** @type {Options} */ options) {
+  const { runPrune } = await import('../lib/baseline-run.mjs')
+  return runPrune(loadConfig(), { dryRun: options.dryRun, quiet: options.quiet })
+}
+
+/** @param {Options} options */
+async function runInitCommand(options) {
+  const { applyInit, loadRecommendation, printInitResult } = await import('../lib/init.mjs')
+  const root = repoRoot()
+
+  let recommendation
+  if (options.from) {
+    recommendation = loadRecommendation(resolve(root, options.from))
+  } else {
+    const { runAudit } = await import('../lib/audit-run.mjs')
+    process.stderr.write(
+      c.dim(
+        'Kein --from angegeben: init misst selbst, damit die Konfiguration auf Zahlen beruht.\n',
+      ),
+    )
+    const report = await runAudit(root, { quiet: options.quiet, secrets: false })
+    if (!report.recommendation) {
+      process.stderr.write(
+        c.red('Keine Komponente erkannt — hier gibt es nichts zu konfigurieren.\n'),
+      )
+      return 2
+    }
+    recommendation = report.recommendation
+  }
+
+  const result = applyInit(root, recommendation, {
+    pkgRoot: PKG_ROOT,
+    force: options.force,
+    dryRun: options.dryRun,
+  })
+  printInitResult(result, { dryRun: options.dryRun })
+  return result.written.length === 0 ? 1 : 0
+}
+
+/**
+ * Dateien, die sich gegenüber HEAD unterscheiden, inklusive neu angelegter.
+ *
+ * @param {string} root
+ * @returns {string[]}
+ */
+function changedFiles(root) {
+  /** @param {string[]} args */
+  const run = (args) => {
+    try {
+      // stderr verschlucken: die Fälle, in denen git hier klagt, fangen wir
+      // selbst ab — eine rohe git-Meldung hilft niemandem weiter.
+      return execFileSync('git', args, {
+        cwd: root,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+        .split('\n')
+        .filter(Boolean)
+    } catch {
+      return []
+    }
+  }
+  // Vor dem ersten Commit gibt es kein HEAD, gegen das sich vergleichen liesse.
+  // Dann ist schlicht alles neu — das ist der Normalfall beim Onboarding.
+  const files = hasCommit(root)
+    ? [
+        ...run(['diff', '--name-only', '--diff-filter=ACMR', 'HEAD']),
+        ...run(['ls-files', '--others', '--exclude-standard']),
+      ]
+    : run(['ls-files', '--cached', '--others', '--exclude-standard'])
+  return [...new Set(files)].filter((f) => existsSync(join(root, f)))
+}
+
+/**
+ * Dateien, für die dieser Zweig einsteht: der Bereich `base...HEAD` plus der
+ * uncommittete Stand. Alles andere ist Bestand — es lag schon so da, als der
+ * Zweig entstand.
+ *
+ * Der Anlass: ein Worktree zweigt von main ab, danach landet auf main ein
+ * Format-Fix. Der Zweig trägt die alte Fassung weiter, ohne sie angefasst zu
+ * haben, und bekam dafür ein rotes Gate. Grün zu bekommen war es nur, indem
+ * jemand fremde Arbeit anfasst — was beim Merge kollidiert.
+ *
+ * Drei Punkte statt zwei, wie beim Tamper-Check: gefragt ist, was auf diesem
+ * Zweig entstand, nicht was sich seither auf main verändert hat.
+ *
+ * @param {string} root
+ * @param {string} base
+ * @returns {string[]}
+ */
+function branchFiles(root, base) {
+  assertRevisionExists(base, root)
+  let range
+  try {
+    range = execFileSync('git', ['diff', '--name-only', '--diff-filter=ACMR', `${base}...HEAD`], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .split('\n')
+      .filter(Boolean)
+  } catch {
+    // Hier nicht auf eine leere Liste zurückfallen: "ich kann es nicht sagen"
+    // wäre dann als "nichts geändert" gelesen, und der fmt-Schritt erklärte
+    // die ganze Komponente zum Bestand. Ein Gate, das bei Unklarheit lockerer
+    // wird, ist keine Zusage.
+    throw new Error(
+      `Kein gemeinsamer Stand zwischen "${base}" und HEAD — der Bereich ${base}...HEAD ist nicht bestimmbar.\n` +
+        '  In CI fehlt dafür meist die Vorgeschichte: actions/checkout braucht dann fetch-depth: 0.',
+    )
+  }
+  return [...new Set([...range, ...changedFiles(root)])].filter((f) => existsSync(join(root, f)))
+}
+
+/**
+ * @param {string} name
+ * @returns {Promise<Stack>}
+ */
+async function loadStack(name) {
+  const file = join(PKG_ROOT, 'stacks', `${name}.mjs`)
+  if (!existsSync(file))
+    throw new Error(`Kein Adapter für stack "${name}" gefunden (erwartet: ${file}).`)
+  return (await import(file)).default
+}
+
+async function main() {
+  let options
+  try {
+    options = parseArgs(process.argv.slice(2))
+  } catch (err) {
+    process.stderr.write(c.red(`${messageOf(err)}\n`))
+    return 2
+  }
+
+  if (options.help || !options.stage) {
+    process.stdout.write(usage())
+    return options.help ? 0 : 2
+  }
+
+  // audit und init laufen ohne quality.yml — sie sind ja dafür da, sie zu erzeugen.
+  // prune braucht sie, ist aber ebenso keine Prüfstufe: es ändert eine Datei.
+  if (COMMANDS.includes(options.stage)) {
+    try {
+      if (options.stage === 'audit') return await runAuditCommand(options)
+      if (options.stage === 'prune') return await runPruneCommand(options)
+      return await runInitCommand(options)
+    } catch (err) {
+      process.stderr.write(c.red(`${messageOf(err)}\n`))
+      return 2
+    }
+  }
+
+  // Nur eigene Schlüssel: sonst gälte `constructor` als Stufe.
+  const stage = Object.hasOwn(STAGES, options.stage)
+    ? STAGES[/** @type {keyof typeof STAGES} */ (options.stage)]
+    : undefined
+  if (!stage) {
+    process.stderr.write(
+      c.red(
+        `Unbekannt: "${options.stage}". Bekannt sind: ${[...Object.keys(STAGES), ...COMMANDS].join(', ')}.\n`,
+      ),
+    )
+    return 2
+  }
+
+  let config
+  try {
+    config = loadConfig()
+  } catch (err) {
+    if (err instanceof ConfigError || err instanceof YamlError) {
+      process.stderr.write(c.red(`${messageOf(err)}\n`))
+      return 2
+    }
+    throw err
+  }
+
+  // --only kann eine Stufe auf einen Teil beschränken — etwa auf den
+  // statischen, wenn die Tests in CI als eigener Job parallel laufen.
+  const plan = planFor(stage, options.only)
+  if (plan.verbs.length === 0 && !plan.tamper) {
+    process.stderr.write(
+      c.red(
+        `--only lässt von "quality ${options.stage}" nichts übrig (Stufe kennt: ${stage.verbs.join(', ')}${stage.tamper ? ', tamper' : ''}).\n`,
+      ),
+    )
+    return 2
+  }
+
+  const useChanged = stage.changedOnly && !options.all
+  const files = options.files ?? (useChanged ? changedFiles(config.root) : null)
+
+  /*
+   * Was --base in einer vollflächigen Stufe bedeutet.
+   *
+   * `fix` und `fast` schauen auf den noch nicht committeten Stand — sie sind
+   * die Stufen während der Arbeit, und ihre Dateiliste ist schon eng. `task`
+   * und `full` beurteilen dagegen die ganze Komponente. Nur sie brauchen die
+   * Antwort auf die Frage, welcher Teil dieser Fläche diesem Zweig gehört.
+   *
+   * Ohne --base gibt es diese Antwort nicht. Dann gehört dem Zweig alles —
+   * nur so bleibt eine CI, die --base nicht mitgibt, so streng wie bisher.
+   * Geraten wird die Basis nicht: eine Schärfe, die davon abhängt, ob sich ein
+   * Branchname lokal auflösen lässt, wäre keine Zusage.
+   *
+   * Mit --files hat der Aufrufer die Fläche bereits selbst bestimmt; eine
+   * zweite Einteilung darüber wäre eine Antwort auf eine Frage, die niemand
+   * gestellt hat.
+   */
+  const splitFmt = !useChanged && options.base && !isNullRef(options.base) && !options.files
+  const owned = splitFmt && options.base ? branchFiles(config.root, options.base) : null
+
+  const steps = []
+  for (const component of config.components) {
+    const stack = await loadStack(component.stack)
+    const enriched = { ...component, kind: stack.kind }
+    const dir = resolve(config.root, component.path)
+    if (!existsSync(dir)) {
+      process.stderr.write(c.red(`Komponente "${component.path}" existiert nicht (${dir}).\n`))
+      return 2
+    }
+
+    const componentFiles = files ? filesForComponent(enriched, files, config.root) : null
+    // Bei einem Datei-Lauf ohne Treffer ist für diese Komponente nichts zu tun.
+    if (componentFiles && componentFiles.length === 0) continue
+
+    const ctx = {
+      dir,
+      root: config.root,
+      component: enriched,
+      config,
+      files: componentFiles,
+      check: stage.check || options.check,
+      full: !stage.changedOnly,
+    }
+
+    const ownedFiles = owned ? filesForComponent(enriched, owned, config.root) : null
+
+    for (const verb of plan.verbs) {
+      /*
+       * Der fmt-Schritt zerfällt mit --base in zwei Läufe.
+       *
+       * Der erste prüft die Dateien dieses Zweigs und blockiert wie bisher.
+       * Der zweite prüft die ganze Komponente und meldet nur. So bleibt eine
+       * Altlast bei jedem Lauf sichtbar, ohne den Task rot zu machen, der sie
+       * nicht verursacht hat — und ohne dass jemand fremde Arbeit anfassen
+       * muss, um ein Gate zu passieren.
+       *
+       * Zwei Läufe statt eines mit ausgewerteter Ausgabe: prettier, pint und
+       * ruff melden ihre Funde je anders. Ein Parser je Werkzeug wäre drei
+       * Stellen, die stillschweigend falsch werden können, wenn ein Werkzeug
+       * sein Format ändert.
+       */
+      if (verb === 'fmt' && ownedFiles) {
+        const own = filesForVerb(enriched.kind, 'fmt', ownedFiles)
+        if (own.length > 0) {
+          const hart = stack.fmt?.({ ...ctx, files: own })
+          if (hart) steps.push(hart)
+        }
+        const bestand = stack.fmt?.({ ...ctx, files: null })
+        if (bestand) {
+          bestand.soft = true
+          bestand.name = `${bestand.name} — ganze Fläche`
+          bestand.note = `blockiert nicht — hart geprüft wird nur ${options.base}...HEAD`
+          steps.push(bestand)
+        }
+        continue
+      }
+
+      // Die Typprüfung braucht immer das ganze Projekt: eine einzelne Datei
+      // ohne ihren Kontext zu prüfen erzeugt Fehler, die es gar nicht gibt.
+      // Gilt für mypy genauso wie für tsc — nur PHPStan kommt mit einer
+      // Einzeldatei zurecht, weil es den Rest über den Autoloader nachlädt.
+      if (verb === 'types' && (enriched.kind === 'js' || enriched.kind === 'py')) {
+        const step = stack[verb]?.({ ...ctx, files: null })
+        if (step) steps.push(step)
+        continue
+      }
+      const verbFiles = filesForVerb(enriched.kind, verb, componentFiles)
+      // Kein Werkzeug ohne Arbeit aufrufen: die meisten deuten eine leere
+      // Dateiliste als Fehler, nicht als "nichts zu tun".
+      if (verbFiles && verbFiles.length === 0) continue
+      const step = stack[verb]?.({ ...ctx, files: verbFiles })
+      if (step) steps.push(step)
+    }
+  }
+
+  let code = 0
+  if (steps.length > 0) {
+    const results = await runSteps(steps, { quiet: options.quiet, stopOnFail: false })
+    const label = options.only
+      ? `quality ${options.stage} --only ${options.only.join(',')}`
+      : `quality ${options.stage}`
+    code = summarize(results, { label: `${label} — ${config.level}` })
+  } else if (plan.verbs.length > 0) {
+    process.stdout.write(
+      c.dim('Keine geänderten Dateien in konfigurierten Komponenten — nichts zu prüfen.\n'),
+    )
+  }
+
+  // Der Tamper-Check läuft auch dann, wenn oben schon etwas rot ist: sonst
+  // wird ein PR in zwei Runden rot statt in einer.
+  if (plan.tamper) {
+    try {
+      const tamperCode = runTamper({
+        root: config.root,
+        base: options.base,
+        ignorePaths: config.tamperIgnore,
+        quiet: options.quiet,
+      })
+      code = Math.max(code, tamperCode)
+    } catch (err) {
+      process.stderr.write(c.red(`Tamper-Check nicht möglich: ${messageOf(err)}\n`))
+      code = Math.max(code, 2)
+    }
+  }
+
+  return code
+}
+
+main()
+  .then((code) => process.exit(code))
+  .catch((err) => {
+    process.stderr.write(c.red(`\n${err.stack ?? err.message}\n`))
+    process.exit(1)
+  })

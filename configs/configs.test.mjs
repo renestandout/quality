@@ -29,7 +29,8 @@ test('Alle Manifeste nennen dieselbe Version', () => {
   // package.json von npm, plugin.json vom Plugin-Dialog, marketplace.json vom
   // Marktplatz. Sie standen auf 1.0.0, während die Tags bei 0.1.4 waren — das
   // Plugin hätte dem Nutzer eine Reife angezeigt, die das Paket nicht hat.
-  const version = (...pfad) => JSON.parse(readFileSync(join(PKG_ROOT, ...pfad), 'utf8')).version
+  const version = (/** @type {string[]} */ ...pfad) =>
+    JSON.parse(readFileSync(join(PKG_ROOT, ...pfad), 'utf8')).version
   const pkg = version('package.json')
   assert.equal(version('.claude-plugin', 'plugin.json'), pkg)
   assert.equal(

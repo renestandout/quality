@@ -15,10 +15,17 @@ import {
   parseDiff,
 } from './tamper.mjs'
 
-/** Ein echtes Repository mit genau einem Commit — dem Stand nach dem ersten Push. */
+/** @import { Finding } from './tamper.mjs' */
+
+/**
+ * Ein echtes Repository mit genau einem Commit — dem Stand nach dem ersten Push.
+ *
+ * @param {string} content
+ */
 function gitFixture(content) {
   const root = mkdtempSync(join(tmpdir(), 'quality-tamper-'))
-  const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+  const git = (/** @type {string[]} */ ...args) =>
+    execFileSync('git', args, { cwd: root, stdio: 'ignore' })
   git('init', '--quiet')
   git('config', 'user.email', 'test@example.com')
   git('config', 'user.name', 'Test')
@@ -29,13 +36,17 @@ function gitFixture(content) {
   return root
 }
 
-const diff = (body) => parseDiff(body.trimStart())
+const diff = (/** @type {string} */ body) => parseDiff(body.trimStart())
 
+/**
+ * @param {string} body
+ * @param {Parameters<typeof analyseDiff>[1]} [options]
+ */
 function check(body, options) {
   return analyseDiff(diff(body), options)
 }
 
-const rules = (findings) => findings.map((f) => f.rule)
+const rules = (/** @type {Finding[]} */ findings) => findings.map((f) => f.rule)
 
 test('parseDiff zählt Zeilennummern der neuen Datei korrekt', () => {
   const files = diff(`
@@ -48,8 +59,8 @@ diff --git a/src/a.ts b/src/a.ts
  const b = 3
 `)
   assert.equal(files.length, 1)
-  assert.equal(files[0].path, 'src/a.ts')
-  assert.deepEqual(files[0].added, [{ line: 11, text: 'const neu = 2' }])
+  assert.equal(files[0]?.path, 'src/a.ts')
+  assert.deepEqual(files[0]?.added, [{ line: 11, text: 'const neu = 2' }])
 })
 
 test('hinzugefügte TypeScript-Suppression wird gemeldet', () => {
@@ -63,7 +74,7 @@ diff --git a/src/a.ts b/src/a.ts
  const b = 2
 `)
   assert.deepEqual(rules(findings), ['suppression.typescript'])
-  assert.equal(findings[0].line, 2)
+  assert.equal(findings[0]?.line, 2)
 })
 
 test('entfernte Suppression ist kein Fund', () => {
@@ -160,7 +171,7 @@ deleted file mode 100644
 +++ /dev/null
 `)
   assert.deepEqual(rules(findings), ['test.deleted'])
-  assert.equal(findings[0].path, 'tests/Unit/ScoreTest.php')
+  assert.equal(findings[0]?.path, 'tests/Unit/ScoreTest.php')
 })
 
 test('gelöschte Nicht-Testdatei ist kein Fund', () => {
@@ -207,7 +218,7 @@ diff --git a/.github/workflows/quality.yml b/.github/workflows/quality.yml
 +# geändert
 `)
   assert.deepEqual(rules(findings), ['protected.changed'])
-  assert.equal(findings[0].label, 'CI-Workflow geändert')
+  assert.equal(findings[0]?.label, 'CI-Workflow geändert')
 })
 
 test('quality.yml zählt nur in der Repo-Wurzel', () => {
@@ -219,7 +230,7 @@ diff --git a/quality.yml b/quality.yml
  version: 1
 +level: standard
 `)
-  assert.equal(wurzel[0].label, 'Quality-Konfiguration geändert')
+  assert.equal(wurzel[0]?.label, 'Quality-Konfiguration geändert')
 
   // Eine gleichnamige Datei tief im Baum ist Projektinhalt, keine Gate-Konfiguration.
   const tiefer = check(`
@@ -467,7 +478,7 @@ diff --git a/.prettierignore b/.prettierignore
  /coverage
 `)
   assert.deepEqual(rules(findings), ['ignore.extended'])
-  assert.equal(findings[0].line, 2)
+  assert.equal(findings[0]?.line, 2)
 })
 
 test('eine Negation in einer Ignore-Datei nimmt Code AUF und ist kein Fund', () => {
@@ -531,7 +542,7 @@ diff --git a/tests/a.test.mjs b/tests/a.test.mjs
  const y = 2
 `)
   assert.deepEqual(
-    files[0].removed.map((r) => r.text),
+    files[0]?.removed?.map((r) => r.text),
     ['assert.equal(x, 1)'],
   )
 })
@@ -550,7 +561,8 @@ diff --git a/tests/Feature/PaymentTest.php b/tests/Feature/PaymentTest.php
      }
 `)
   assert.deepEqual(rules(findings), ['test.assertions-removed'])
-  assert.match(findings[0].detail, /2/)
+  // Die Zeile mit rules() verlangt genau einen Fund. findings[0] ist also gesetzt.
+  assert.match(/** @type {Finding} */ (findings[0]).detail, /2/)
 })
 
 test('umgeschriebene Assertions sind kein Fund', () => {
@@ -618,8 +630,8 @@ diff --git a/.gitleaks.toml b/.gitleaks.toml
  ]
 `)
   assert.deepEqual(rules(findings), ['allowlist.extended'])
-  assert.equal(findings[0].line, 22)
-  assert.equal(findings[0].label, 'erweiterte Secret-Ausnahme')
+  assert.equal(findings[0]?.line, 22)
+  assert.equal(findings[0]?.label, 'erweiterte Secret-Ausnahme')
 })
 
 test('die Form [[allowlists]] mit paths wird ebenso gemeldet', () => {
@@ -635,7 +647,8 @@ diff --git a/.gitleaks.toml b/.gitleaks.toml
 `)
   assert.deepEqual(rules(findings), ['allowlist.extended'])
   // Gemeldet wird die Ausnahme selbst, nicht ihre Begründung.
-  assert.match(findings[0].detail, /\^docroot\//)
+  // Die Zeile mit rules() verlangt genau einen Fund. findings[0] ist also gesetzt.
+  assert.match(/** @type {Finding} */ (findings[0]).detail, /\^docroot\//)
 })
 
 test('eine hinzugefügte [[rules]]-Sektion verschärft und ist kein Fund', () => {
@@ -802,7 +815,7 @@ test('die gitleaks-Baseline dagegen ist ein geschützter Pfad', () => {
       { path: datei, added: [{ line: 1, text: '[]' }], deleted: false },
     ])
     assert.deepEqual(rules(findings), ['protected.changed'], `${datei} müsste geschützt sein`)
-    assert.equal(findings[0].label, 'gitleaks-Baseline geändert')
+    assert.equal(findings[0]?.label, 'gitleaks-Baseline geändert')
   }
 })
 
@@ -865,6 +878,7 @@ test('eine unauffindbare Basis bleibt ein Fehler und nennt beide Ursachen', () =
     assert.throws(
       () => runTamper({ root, base: 'origin/main', quiet: true }),
       (err) => {
+        assert.ok(err instanceof Error)
         assert.match(err.message, /nicht auffindbar/)
         assert.match(err.message, /fetch-depth: 0/)
         assert.match(err.message, /Force-Push/)
@@ -1135,10 +1149,14 @@ test('die übrigen geschützten Pfade kennen keine Richtung', () => {
  * `change` schreibt den neuen Inhalt und committet ihn als zweiten Commit;
  * geprüft wird dann der Bereich HEAD~1...HEAD — also der CI-Modus, in dem
  * `protected.changed` bindend ist.
+ *
+ * @param {string} before
+ * @param {string} after
  */
 function baselineFixture(before, after) {
   const root = mkdtempSync(join(tmpdir(), 'quality-baseline-'))
-  const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+  const git = (/** @type {string[]} */ ...args) =>
+    execFileSync('git', args, { cwd: root, stdio: 'ignore' })
   git('init', '--quiet')
   git('config', 'user.email', 'test@example.com')
   git('config', 'user.name', 'Test')
@@ -1151,7 +1169,7 @@ function baselineFixture(before, after) {
   return root
 }
 
-const neonEntry = (message, count = 1) =>
+const neonEntry = (/** @type {string} */ message, count = 1) =>
   [
     '\t\t-',
     `\t\t\tmessage: '${message}'`,
@@ -1160,7 +1178,8 @@ const neonEntry = (message, count = 1) =>
     '\t\t\tpath: app/A.php',
   ].join('\n')
 
-const neonBaseline = (...entries) => 'parameters:\n\tignoreErrors:\n' + entries.join('\n\n') + '\n'
+const neonBaseline = (/** @type {string[]} */ ...entries) =>
+  'parameters:\n\tignoreErrors:\n' + entries.join('\n\n') + '\n'
 
 test('echter Diff: eine HINZUGEFÜGTE Baseline-Zeile meldet in CI weiterhin', () => {
   // Die Gegenprobe zur Richtungsregel. Sie läuft über git, nicht über einen

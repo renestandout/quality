@@ -15,7 +15,12 @@ export async function readHookInput() {
   }
 }
 
-/** Sucht die quality.yml ab einem Startverzeichnis aufwärts. */
+/**
+ * Sucht die quality.yml ab einem Startverzeichnis aufwärts.
+ *
+ * @param {string} startDir
+ * @returns {string | null}
+ */
 export function findProjectRoot(startDir) {
   let dir = resolve(startDir)
   for (;;) {
@@ -27,9 +32,19 @@ export function findProjectRoot(startDir) {
 }
 
 /**
+ * Fehler von execFileSync: Status und bisherige Ausgabe des Prozesses.
+ *
+ * @typedef {Error & { code?: string, status?: number | null, stdout?: string, stderr?: string }} ExecError
+ */
+
+/**
  * Führt den Runner aus und gibt {code, output} zurück.
  * Der Runner liegt im Plugin selbst — so ist er auch dann da, wenn das
  * Projekt das Paket (noch) nicht installiert hat.
+ *
+ * @param {string[]} args
+ * @param {{ cwd: string, timeoutMs: number }} options
+ * @returns {{ code: number, output: string, timedOut?: boolean }}
  */
 export function runQuality(args, { cwd, timeoutMs }) {
   const runner = resolve(import.meta.dirname, '..', '..', 'bin', 'quality')
@@ -43,11 +58,18 @@ export function runQuality(args, { cwd, timeoutMs }) {
     })
     return { code: 0, output }
   } catch (err) {
-    if (err.code === 'ETIMEDOUT') return { code: 0, output: '', timedOut: true }
-    return { code: err.status ?? 1, output: `${err.stdout ?? ''}${err.stderr ?? ''}` }
+    // execFileSync wirft einen Error mit Status und der bisherigen Ausgabe.
+    const failure = /** @type {ExecError} */ (err)
+    if (failure.code === 'ETIMEDOUT') return { code: 0, output: '', timedOut: true }
+    return { code: failure.status ?? 1, output: `${failure.stdout ?? ''}${failure.stderr ?? ''}` }
   }
 }
 
+/**
+ * @param {string} filePath
+ * @param {string} root
+ * @returns {string | null}
+ */
 export function relativeToRoot(filePath, root) {
   const rel = relative(root, resolve(filePath))
   return rel.startsWith('..') ? null : rel

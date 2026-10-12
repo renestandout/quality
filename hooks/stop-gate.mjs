@@ -31,11 +31,16 @@ const STATE_MAX_AGE_MS = 6 * 60 * 60 * 1000
 
 const stateDir = join(tmpdir(), 'standout-quality')
 
+/** @param {unknown} sessionId */
 function stateFile(sessionId) {
   const safe = String(sessionId ?? 'unbekannt').replace(/[^a-zA-Z0-9_-]/g, '')
   return join(stateDir, `stop-${safe}.json`)
 }
 
+/**
+ * @param {string} file
+ * @returns {number}
+ */
 function readAttempts(file) {
   try {
     const state = JSON.parse(readFileSync(file, 'utf8'))
@@ -46,6 +51,10 @@ function readAttempts(file) {
   }
 }
 
+/**
+ * @param {string} file
+ * @param {number} count
+ */
 function writeAttempts(file, count) {
   try {
     mkdirSync(stateDir, { recursive: true })
@@ -55,6 +64,7 @@ function writeAttempts(file, count) {
   }
 }
 
+/** @param {string} file */
 function clearAttempts(file) {
   try {
     if (existsSync(file)) rmSync(file)
@@ -63,6 +73,11 @@ function clearAttempts(file) {
   }
 }
 
+/**
+ * @param {string} root
+ * @param {string[]} args
+ * @returns {string | null}
+ */
 function gitIn(root, args) {
   try {
     return execFileSync('git', args, {
@@ -79,6 +94,9 @@ function gitIn(root, args) {
  * Läuft gerade eine Integration — ein Merge, Cherry-Pick, Revert oder Rebase?
  * Dann gehören die uncommitteten Dateien nicht dieser Session. Den Pfad löst
  * git auf: in einem Worktree liegen diese Marker nicht unter `.git/`.
+ *
+ * @param {string} root
+ * @returns {boolean}
  */
 function integrationLaeuft(root) {
   const marker = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply']
@@ -92,6 +110,9 @@ function integrationLaeuft(root) {
  * Ist das eine Koordinations-Session von agent-desk? Sie ändert keinen Code,
  * sie integriert nur, und das Gate von `cc --integrieren` prüft dort selbst.
  * Erkennbar ist sie nur an ihrer Instruktionsdatei im Haupt-Checkout.
+ *
+ * @param {string} root
+ * @returns {boolean}
  */
 function koordinationsSession(root) {
   const top = gitIn(root, ['rev-parse', '--show-toplevel']) ?? root

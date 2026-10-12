@@ -43,12 +43,14 @@ for (const f of bad) process.stdout.write('[warn] ' + f + '\\n')
 process.exit(bad.length > 0 ? 1 : 0)
 `
 
-const git = (args, cwd) => execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
+const git = (/** @type {string[]} */ args, /** @type {string} */ cwd) =>
+  execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
 
 /** Ein Projekt mit Gate und einer uncommitteten, unformatierten Datei. */
 function projekt() {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'quality-stop-')))
-  const schreibe = (name, text) => writeFileSync(join(dir, name), text)
+  const schreibe = (/** @type {string} */ name, /** @type {string} */ text) =>
+    writeFileSync(join(dir, name), text)
 
   mkdirSync(join(dir, 'node_modules', '.bin'), { recursive: true })
   writeFileSync(join(dir, 'node_modules', '.bin', 'prettier'), FAKE_PRETTIER)
@@ -70,7 +72,11 @@ function projekt() {
   return dir
 }
 
-/** Lässt im Projekt einen Merge offen, wie `cc --integrieren` ihn vor dem Gate hinterlässt. */
+/**
+ * Lässt im Projekt einen Merge offen, wie `cc --integrieren` ihn vor dem Gate hinterlässt.
+ *
+ * @param {string} dir
+ */
 function offenerMerge(dir) {
   git(['checkout', '-q', '-b', 'task'], dir)
   writeFileSync(join(dir, 'b.ts'), 'export const b = 1 // UNFORMATTED\n')
@@ -82,6 +88,7 @@ function offenerMerge(dir) {
 
 let sitzung = 0
 
+/** @param {string} dir */
 function stopHook(dir) {
   const input = JSON.stringify({ cwd: dir, session_id: `test-${process.pid}-${++sitzung}` })
   const r = spawnSync(process.execPath, [HOOK], {

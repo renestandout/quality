@@ -10,13 +10,22 @@ import {
   parseDiff,
 } from './tamper.mjs'
 
+/** @import { DiffFile, Finding } from './tamper.mjs' */
+
+/**
+ * @param {string[]} args
+ * @param {string} cwd
+ * @returns {string}
+ */
 function git(args, cwd) {
   try {
     return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
   } catch (err) {
+    // execFileSync wirft einen Error, der die Ausgabe von git in `stderr` trägt.
+    const failure = /** @type {Error & { stderr?: Buffer | string }} */ (err)
     // Ein leerer Diff liefert Status 0; alles andere ist ein echtes Problem.
     throw new Error(
-      `git ${args.join(' ')} fehlgeschlagen: ${err.stderr?.toString().trim() || err.message}`,
+      `git ${args.join(' ')} fehlgeschlagen: ${failure.stderr?.toString().trim() || failure.message}`,
     )
   }
 }
@@ -26,6 +35,9 @@ function git(args, cwd) {
  * häufigsten Ursachen genannt werden: in CI fehlt meist die Historie, weil
  * actions/checkout standardmässig nur einen einzelnen Commit holt — und nach
  * einem Force-Push existiert der Stand vor dem Push nicht mehr.
+ *
+ * @param {string} ref
+ * @param {string} root
  */
 export function assertRevisionExists(ref, root) {
   try {
@@ -51,6 +63,9 @@ export function assertRevisionExists(ref, root) {
  * `github.event.before`, wenn es keinen Stand vor dem Push gibt — beim ersten
  * Push eines Branches. Kurzformen zählen mit, weil git Kennungen auch gekürzt
  * ausgibt.
+ *
+ * @param {unknown} ref
+ * @returns {boolean}
  */
 export function isNullRef(ref) {
   return typeof ref === 'string' && /^0{7,40}$/.test(ref.trim())
@@ -60,6 +75,9 @@ export function isNullRef(ref) {
  * Gibt es überhaupt schon einen Commit?
  * Vor dem ersten gibt es kein HEAD — ein frisch angelegtes Repository ist
  * genau der Zustand, in dem ein Projekt das Gate zum ersten Mal aufruft.
+ *
+ * @param {string} root
+ * @returns {boolean}
  */
 export function hasCommit(root) {
   try {
@@ -81,11 +99,16 @@ const MAX_UNTRACKED_BYTES = 512 * 1024
  * `git diff HEAD` kennt sie nicht — ohne diesen Schritt bliebe eine neu
  * angelegte Datei mit Suppression lokal unsichtbar und fiele erst in CI auf.
  * Genau das soll der lokale Lauf ja verhindern.
+ *
+ * @param {string} root
+ * @param {{ includeCached?: boolean }} [options]
+ * @returns {DiffFile[]}
  */
 function untrackedAsAdded(root, { includeCached = false } = {}) {
   const args = ['ls-files', '--others', '--exclude-standard']
   if (includeCached) args.push('--cached')
   const paths = git(args, root).split('\n').filter(Boolean)
+  /** @type {DiffFile[]} */
   const files = []
   for (const path of paths) {
     try {
@@ -105,7 +128,13 @@ function untrackedAsAdded(root, { includeCached = false } = {}) {
   return files
 }
 
-/** Ermittelt, ob der Diff von einem Bot stammt (Renovate, Dependabot). */
+/**
+ * Ermittelt, ob der Diff von einem Bot stammt (Renovate, Dependabot).
+ *
+ * @param {string} root
+ * @param {string | null} base
+ * @returns {boolean}
+ */
 function isBotAuthor(root, base) {
   const actor = process.env.GITHUB_ACTOR ?? ''
   if (actor.endsWith('[bot]') || actor === 'renovate' || actor === 'dependabot') return true
@@ -125,6 +154,9 @@ function isBotAuthor(root, base) {
  * Mit `base` wird der Bereich base...HEAD geprüft — in CI der Zielbranch eines
  * Pull Requests oder der Stand vor einem Push. Ohne `base` gilt der
  * uncommittete Stand gegen HEAD (lokal, pre-commit).
+ *
+ * @param {{ root: string, base?: string | null, ignorePaths?: string[], quiet?: boolean }} options
+ * @returns {number}
  */
 export function runTamper({ root, base = null, ignorePaths = [], quiet = false }) {
   // Beim ersten Push eines Branches gibt es keinen Stand davor. Sauber
@@ -191,13 +223,16 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
   const messages = base ? git(['log', `${base}..HEAD`, '--format=%B%x00'], root).split('\0') : []
   const exception = findException(messages)
 
-  const write = (s) => process.stdout.write(s)
+  const write = (/** @type {string} */ s) => process.stdout.write(s)
   write('\n' + c.bold('── Tamper-Check ──') + '\n')
 
+  /** @type {Map<string, Finding[]>} */
   const byFile = new Map()
   for (const f of findings) {
     if (!byFile.has(f.path)) byFile.set(f.path, [])
-    byFile.get(f.path).push(f)
+    // Die Zeile darüber legt den Eintrag an, falls er fehlt.
+    const list = /** @type {Finding[]} */ (byFile.get(f.path))
+    list.push(f)
   }
   for (const [path, entries] of byFile) {
     write(`\n${c.bold(path)}\n`)

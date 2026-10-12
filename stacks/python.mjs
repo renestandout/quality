@@ -2,6 +2,8 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { findBinary, missingToolHint } from '../lib/tools.mjs'
 
+/** @import { Stack, StackContext } from '../lib/types.mjs' */
+
 /**
  * Python-Stack.
  *
@@ -26,14 +28,20 @@ const MYPY_FILES = ['mypy.ini', '.mypy.ini']
  * mit einem Minimalregelsatz (E4, E7, E9, F) und mypy ohne jede Strenge. Das
  * Gate wäre grün und prüfte fast nichts — dieselbe Falle, die bei
  * rankscan/application vier Wochen lang eine fremde phpstan.neon aktiv liess.
+ *
+ * @param {string} dir
+ * @param {{ files: string[], section: string }} where
+ * @returns {string | null}
  */
 function findConfig(dir, { files, section }) {
   const own = files.find((f) => existsSync(join(dir, f)))
   if (own) return own
-  for (const [file, marker] of [
+  /** @type {Array<[string, string]>} */
+  const candidates = [
     ['pyproject.toml', `[tool.${section}`],
     ['setup.cfg', `[${section}`],
-  ]) {
+  ]
+  for (const [file, marker] of candidates) {
     const full = join(dir, file)
     if (!existsSync(full)) continue
     try {
@@ -53,6 +61,9 @@ const TEST_NAME = /^(test_.*|.*_test)\.py$/
  * pytest beendet mit Exit 5, wenn es nichts sammelt — für den Runner ein
  * Fehlschlag. Ein Projekt ohne Tests soll das Gate aber nicht blockieren,
  * sondern den Schritt sichtbar überspringen.
+ *
+ * @param {string} dir
+ * @returns {boolean}
  */
 function hasTests(dir) {
   for (const name of ['tests', 'test']) {
@@ -65,15 +76,17 @@ function hasTests(dir) {
   }
 }
 
-const isTestFile = (f) => TEST_NAME.test(f.split('/').pop() ?? '')
+const isTestFile = (/** @type {string} */ f) => TEST_NAME.test(f.split('/').pop() ?? '')
 
 /** Ziel eines Werkzeugs: die geänderten Dateien, sonst das ganze Verzeichnis. */
-const targets = (ctx) => (ctx.files?.length ? ctx.files : ['.'])
+const targets = (/** @type {StackContext} */ ctx) => (ctx.files?.length ? ctx.files : ['.'])
 
+/** @satisfies {Stack} */
 export default {
   name: 'python',
   kind: 'py',
 
+  /** @param {StackContext} ctx */
   fmt(ctx) {
     const tool = findBinary('ruff', { dir: ctx.dir, root: ctx.root, kind: 'py' })
     if (!tool) return { name: 'ruff format', skip: missingToolHint('ruff', 'py') }
@@ -85,6 +98,7 @@ export default {
     }
   },
 
+  /** @param {StackContext} ctx */
   lint(ctx) {
     const tool = findBinary('ruff', { dir: ctx.dir, root: ctx.root, kind: 'py' })
     if (!tool) return { name: 'ruff check', skip: missingToolHint('ruff', 'py') }
@@ -102,6 +116,7 @@ export default {
     }
   },
 
+  /** @param {StackContext} ctx */
   types(ctx) {
     const tool = findBinary('mypy', { dir: ctx.dir, root: ctx.root, kind: 'py' })
     if (!tool) return { name: 'mypy', skip: missingToolHint('mypy', 'py') }
@@ -127,6 +142,7 @@ export default {
     }
   },
 
+  /** @param {StackContext} ctx */
   test(ctx) {
     if (ctx.component.testCommand) {
       const [cmd, ...args] = ctx.component.testCommand.split(' ')

@@ -11,6 +11,44 @@
  * ein Mensch. Der legitime Fall bleibt möglich, aber sichtbar und bewusst.
  */
 
+/**
+ * Eine hinzugefügte Zeile im Diff, mit ihrer Nummer im Zielzustand.
+ *
+ * @typedef {object} AddedLine
+ * @property {number} line
+ * @property {string} text
+ */
+
+/**
+ * Eine entfernte Zeile im Diff. Sie hat keine Nummer: die alte zeigte auf
+ * einen Zustand, den es nicht mehr gibt.
+ *
+ * @typedef {object} RemovedLine
+ * @property {string} text
+ */
+
+/**
+ * Eine Datei aus dem Diff, wie parseDiff sie liefert.
+ * `removed` fehlt bei Dateien, die nur als hinzugefügt gelten (untracked).
+ *
+ * @typedef {object} DiffFile
+ * @property {string} path
+ * @property {AddedLine[]} added
+ * @property {RemovedLine[] | undefined} [removed]
+ * @property {boolean} deleted
+ */
+
+/**
+ * Ein Treffer des Tamper-Checks.
+ *
+ * @typedef {object} Finding
+ * @property {string} rule
+ * @property {string} path
+ * @property {number | undefined} [line]
+ * @property {string} label
+ * @property {string} detail
+ */
+
 export const EXCEPTION_TRAILER = 'Quality-Exception:'
 
 /**
@@ -69,7 +107,8 @@ export const TEST_FILE = /(^|\/)(tests?|__tests__|spec)\//i
 // und ohne sie bliebe ein stillgelegter Test in einer .test.mjs unbemerkt.
 export const TEST_NAME = /\.(test|spec)\.[mc]?[jt]sx?$|Test\.php$|_test\.py$|test_.*\.py$/i
 
-export const isTestFile = (path) => TEST_FILE.test(path) || TEST_NAME.test(path)
+export const isTestFile = (/** @type {string} */ path) =>
+  TEST_FILE.test(path) || TEST_NAME.test(path)
 
 /** Quellcode, in dem Suppressions gesucht werden — nicht in Sperr-/Buildartefakten. */
 export const SOURCE_FILE = /\.(php|[jt]sx?|mjs|cjs|vue|py)$/i
@@ -212,9 +251,14 @@ export const REMOVED_LINE_RULES = [
  * Zerlegt einen unified diff in {path, added: [{line, text}], removed, deleted, renamed}.
  * Bewusst genügsam: es zählt, welche Zeilen hinzugekommen sind und welche
  * Dateien verschwunden sind.
+ *
+ * @param {string} diffText
+ * @returns {DiffFile[]}
  */
 export function parseDiff(diffText) {
+  /** @type {{ path: string | null, added: AddedLine[], removed: RemovedLine[], deleted: boolean }[]} */
   const files = []
+  /** @type {(typeof files)[number] | null} */
   let current = null
   let newLineNo = 0
 
@@ -222,7 +266,13 @@ export function parseDiff(diffText) {
     if (raw.startsWith('diff --git ')) {
       // "diff --git a/pfad b/pfad" — der b-Pfad ist der Zielzustand.
       const match = raw.match(/ b\/(.*)$/)
-      current = { path: match ? match[1] : null, added: [], removed: [], deleted: false }
+      // Die Gruppe `(.*)` passt immer mit, auch leer. Sie ist also gesetzt.
+      current = {
+        path: match ? /** @type {string} */ (match[1]) : null,
+        added: [],
+        removed: [],
+        deleted: false,
+      }
       files.push(current)
       continue
     }
@@ -244,7 +294,8 @@ export function parseDiff(diffText) {
     }
     if (raw.startsWith('@@')) {
       const match = raw.match(/@@ -\d+(?:,\d+)? \+(\d+)/)
-      newLineNo = match ? Number.parseInt(match[1], 10) : 0
+      // Die Gruppe ist im Muster nicht optional: passt es, ist sie gesetzt.
+      newLineNo = match ? Number.parseInt(/** @type {string} */ (match[1]), 10) : 0
       continue
     }
     if (raw.startsWith('+') && !raw.startsWith('+++')) {
@@ -261,7 +312,8 @@ export function parseDiff(diffText) {
     if (raw.startsWith(' ') || raw === '') newLineNo++
   }
 
-  return files.filter((f) => f.path)
+  // Der Filter entfernt Einträge ohne Pfad. Übrig bleiben nur DiffFile-Formen.
+  return /** @type {DiffFile[]} */ (files.filter((f) => f.path))
 }
 
 /**
@@ -270,6 +322,11 @@ export function parseDiff(diffText) {
  * `section` ist der Abschnitt, in dem die Zeile steht: 'allow' für eine
  * Allowlist, 'other' für [[rules]] und [extend], null wenn er unbekannt ist.
  * `arrayKey` ist der Schlüssel einer offenen mehrzeiligen Liste.
+ *
+ * @param {string} entry
+ * @param {'allow' | 'other' | null} section
+ * @param {string | null} arrayKey
+ * @returns {boolean}
  */
 function widensGitleaks(entry, section, arrayKey) {
   // Der Standard-Regelsatz abgeschaltet: die grösstmögliche Ausnahme, und sie
@@ -308,10 +365,16 @@ function widensGitleaks(entry, section, arrayKey) {
  * eingefügt, fehlt jeder Hinweis auf den Abschnitt — die Zeile meldet dann,
  * obwohl sie verschärft. Der Fall ist selten; die umgekehrte Voreinstellung
  * wäre der teurere Fehler, weil sie eine weggedrückte Fundstelle verschweigt.
+ *
+ * @param {DiffFile} file
+ * @returns {Finding[]}
  */
 function scanGitleaksConfig(file) {
+  /** @type {Finding[]} */
   const findings = []
+  /** @type {'allow' | 'other' | null} */
   let section = null
+  /** @type {string | null} */
   let arrayKey = null
 
   for (const { line, text } of file.added) {
@@ -321,7 +384,8 @@ function scanGitleaksConfig(file) {
     const header = entry.match(TOML_SECTION)
     if (header) {
       // Der letzte Namensteil zählt: [rules.allowlist] ist eine Allowlist.
-      const name = header[1].split('.').pop()
+      // Die Gruppe ist im Muster Pflicht, und split liefert nie ein leeres Array.
+      const name = /** @type {string} */ (/** @type {string} */ (header[1]).split('.').pop())
       section = /^allowlists?$/i.test(name) ? 'allow' : 'other'
       arrayKey = null
       continue
@@ -330,7 +394,8 @@ function scanGitleaksConfig(file) {
     // Klammern einer mehrzeiligen Liste tragen selbst keinen Wert.
     const opens = entry.match(/^([A-Za-z_][\w-]*)\s*=\s*\[$/)
     if (opens) {
-      arrayKey = opens[1]
+      // Die Gruppe ist im Muster Pflicht: passt es, ist sie gesetzt.
+      arrayKey = /** @type {string} */ (opens[1])
       continue
     }
     if (/^[\]}],?$/.test(entry)) {
@@ -364,7 +429,7 @@ const COUNT_LINE = /^[ \t]*"?count"?[ \t]*:[ \t]*(\d+),?[ \t]*$/
  * JSON-Arrays, verliert das vorherige sein Komma. Diese Zeile ist inhaltlich
  * dieselbe und darf nicht als neue zählen.
  */
-const shape = (text) => text.replace(/,[ \t]*$/, '')
+const shape = (/** @type {string} */ text) => text.replace(/,[ \t]*$/, '')
 
 /**
  * Entfernt diese Baseline-Änderung nur, oder nimmt sie etwas auf?
@@ -392,17 +457,21 @@ const shape = (text) => text.replace(/,[ \t]*$/, '')
  * umformatiert — Tabs zu Leerzeichen, andere Anführungszeichen — gilt jede
  * Zeile als neu, und die Regel meldet. Das ist Absicht: eine Umformatierung ist
  * kein Schrumpfen, und `quality prune` erzeugt sie nicht.
+ *
+ * @param {DiffFile} file
+ * @returns {boolean}
  */
 export function baselineOnlyShrinks(file) {
-  const content = (lines) =>
+  const content = (/** @type {RemovedLine[] | undefined} */ lines) =>
     (lines ?? []).map((entry) => entry.text).filter((text) => text.trim() !== '')
   const added = content(file.added)
   const removed = content(file.removed)
 
-  const sumCounts = (lines) =>
+  const sumCounts = (/** @type {string[]} */ lines) =>
     lines.reduce((total, text) => {
       const hit = COUNT_LINE.exec(text)
-      return hit ? total + Number.parseInt(hit[1], 10) : total
+      // Die Gruppe ist im Muster nicht optional: passt es, ist sie gesetzt.
+      return hit ? total + Number.parseInt(/** @type {string} */ (hit[1]), 10) : total
     }, 0)
   if (sumCounts(added) > sumCounts(removed)) return false
 
@@ -446,10 +515,15 @@ export function baselineOnlyShrinks(file) {
  * ALLE Autoren des Diffs Bots sein. Ein einziger menschlicher Commit im
  * selben PR schaltet beide Regeln wieder scharf — es lässt sich also nichts
  * in einem Bot-PR mitschmuggeln.
+ *
+ * @param {DiffFile[]} files
+ * @param {{ botAuthor?: boolean, ignorePaths?: string[] }} [options]
+ * @returns {Finding[]}
  */
 export function analyseDiff(files, { botAuthor = false, ignorePaths = [] } = {}) {
+  /** @type {Finding[]} */
   const findings = []
-  const ignored = (path) => ignorePaths.some((p) => path.startsWith(p))
+  const ignored = (/** @type {string} */ path) => ignorePaths.some((p) => path.startsWith(p))
 
   for (const file of files) {
     if (ignored(file.path) || VENDOR_PATH.test(file.path)) continue
@@ -532,7 +606,8 @@ export function analyseDiff(files, { botAuthor = false, ignorePaths = [] } = {})
     for (const rule of REMOVED_LINE_RULES) {
       if (rule.scope === 'test' ? !inTest : !inSource) continue
 
-      const count = (lines) => lines.filter((entry) => rule.pattern.test(entry.text)).length
+      const count = (/** @type {RemovedLine[]} */ lines) =>
+        lines.filter((entry) => rule.pattern.test(entry.text)).length
       const gone = count(file.removed ?? [])
       const back = count(file.added)
 
@@ -550,7 +625,12 @@ export function analyseDiff(files, { botAuthor = false, ignorePaths = [] } = {})
   return findings
 }
 
-/** Sucht den Ausnahme-Trailer in den Commit-Nachrichten des geprüften Bereichs. */
+/**
+ * Sucht den Ausnahme-Trailer in den Commit-Nachrichten des geprüften Bereichs.
+ *
+ * @param {string[]} commitMessages
+ * @returns {string | null}
+ */
 export function findException(commitMessages) {
   for (const message of commitMessages) {
     for (const line of message.split('\n')) {

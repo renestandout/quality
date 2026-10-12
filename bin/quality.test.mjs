@@ -62,18 +62,20 @@ for (const f of bad) process.stdout.write('[warn] ' + f + '\\n')
 process.exit(bad.length > 0 ? 1 : 0)
 `
 
-const git = (args, cwd) => execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
+const git = (/** @type {string[]} */ args, /** @type {string} */ cwd) =>
+  execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
 
 /**
  * Baut die Lage nach: Basis-Commit mit unformatierter Altlast, davon ein Zweig
  * mit eigener Arbeit, danach der Format-Fix auf main.
  *
- * @param {object} args
- * @param {boolean} args.eigeneDateiUnformatiert  ist die Arbeit des Zweigs selbst unformatiert?
+ * @param {object} [args]
+ * @param {boolean} [args.eigeneDateiUnformatiert]  ist die Arbeit des Zweigs selbst unformatiert?
  */
 function lage({ eigeneDateiUnformatiert = false } = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'quality-base-')))
-  const schreibe = (name, text) => writeFileSync(join(dir, name), text)
+  const schreibe = (/** @type {string} */ name, /** @type {string} */ text) =>
+    writeFileSync(join(dir, name), text)
 
   mkdirSync(join(dir, 'node_modules', '.bin'), { recursive: true })
   writeFileSync(join(dir, 'node_modules', '.bin', 'prettier'), FAKE_PRETTIER)
@@ -105,7 +107,12 @@ function lage({ eigeneDateiUnformatiert = false } = {}) {
   return dir
 }
 
-/** Führt quality aus und gibt Ausgabe und Exit-Code zurück, ohne zu werfen. */
+/**
+ * Führt quality aus und gibt Ausgabe und Exit-Code zurück, ohne zu werfen.
+ *
+ * @param {string} dir
+ * @param {string[]} args
+ */
 function quality(dir, args) {
   try {
     const output = execFileSync(process.execPath, [QUALITY, ...args], {
@@ -114,7 +121,9 @@ function quality(dir, args) {
       env: { ...process.env, NO_COLOR: '1' },
     })
     return { output, code: 0 }
-  } catch (err) {
+  } catch (thrown) {
+    // execFileSync wirft bei Exit-Code ungleich 0 einen Fehler mit stdout, stderr und status.
+    const err = /** @type {{ stdout?: string, stderr?: string, status?: number | null }} */ (thrown)
     return { output: `${err.stdout ?? ''}${err.stderr ?? ''}`, code: err.status ?? 1 }
   }
 }
@@ -200,6 +209,22 @@ test('fast --check meldet unformatierte Dateien, statt sie zu ändern', () => {
     assert.equal(code, 1, `Gate müsste rot sein, war aber ${code}:\n${output}`)
     assert.match(output, /mine\.ts/)
     assert.match(readFileSync(join(dir, 'mine.ts'), 'utf8'), /UNFORMATTED/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// Gefunden von tsc am 12.10.2026: `STAGES[name]` fand auch geerbte
+// Eigenschaften. `quality constructor` lief dann mit einer Funktion als Stufe
+// weiter und brach mit einem TypeError ab, statt die Stufe abzulehnen.
+test('eine Stufe namens constructor ist unbekannt und kein Absturz', () => {
+  const dir = lage()
+  try {
+    for (const name of ['constructor', 'toString']) {
+      const { output, code } = quality(dir, [name])
+      assert.equal(code, 2, `"${name}" müsste mit 2 enden, war aber ${code}:\n${output}`)
+      assert.match(output, new RegExp(`Unbekannt: "${name}"`))
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

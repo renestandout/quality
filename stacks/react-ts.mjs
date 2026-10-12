@@ -10,6 +10,8 @@ import {
   scriptCommand,
 } from '../lib/tools.mjs'
 
+/** @import { Stack, StackContext, Step } from '../lib/types.mjs' */
+
 /**
  * TypeScript-Stacks (react-ts, next-ts, node-ts).
  *
@@ -19,6 +21,10 @@ import {
  * Formatierung und tsconfig-Basis.
  */
 
+/**
+ * @param {string} dir
+ * @returns {Record<string, string>}
+ */
 function packageScripts(dir) {
   const file = join(dir, 'package.json')
   if (!existsSync(file)) return {}
@@ -36,6 +42,12 @@ function packageScripts(dir) {
  * Schritt sagt es. Ein abgebrochener Schritt wäre hier der schlechtere
  * Tausch: das Skript selbst läuft auch unter npm, nur die Umgebung stimmt
  * nicht ganz.
+ *
+ * @param {string} script
+ * @param {StackContext} ctx
+ * @param {string} label
+ * @param {string[]} [extraArgs]
+ * @returns {Step}
  */
 function runScript(script, ctx, label, extraArgs = []) {
   const wanted = packageManagerFor(ctx.dir, ctx.root) ?? 'npm'
@@ -54,6 +66,10 @@ function runScript(script, ctx, label, extraArgs = []) {
  * Das lint-Skript des Projekts, unter "strict" um die passende Option
  * ergänzt. Erkennt das Framework den Linter nicht, bleibt das Skript
  * unverändert und der Schritt meldet, dass strict hier nicht greift.
+ *
+ * @param {StackContext} ctx
+ * @param {string} scriptText
+ * @returns {Step}
  */
 function lintScript(ctx, scriptText) {
   const strict = ctx.config?.level === 'strict'
@@ -65,10 +81,12 @@ function lintScript(ctx, scriptText) {
   return step
 }
 
+/** @satisfies {Stack} */
 export default {
   name: 'react-ts',
   kind: 'js',
 
+  /** @param {StackContext} ctx */
   fmt(ctx) {
     const tool = findBinary('prettier', { dir: ctx.dir, root: ctx.root, kind: 'js' })
     if (!tool) return { name: 'prettier', skip: missingToolHint('prettier', 'js') }
@@ -81,6 +99,7 @@ export default {
     }
   },
 
+  /** @param {StackContext} ctx */
   lint(ctx) {
     // Sind einzelne Dateien gemeint (Editor-Hook), muss der Linter direkt
     // aufgerufen werden: ein npm-Skript nimmt keine Dateiargumente entgegen
@@ -95,10 +114,12 @@ export default {
     // beenden mit 0 — ein Gate, das darauf hört, meldet nie etwas. Unter
     // "strict" zählen Warnungen deshalb als Fehler.
     const strict = ctx.config?.level === 'strict'
-    for (const [tool, fallbackArgs] of [
+    /** @type {Array<['oxlint' | 'eslint', string[]]>} */
+    const linters = [
       ['oxlint', []],
       ['eslint', ['.']],
-    ]) {
+    ]
+    for (const [tool, fallbackArgs] of linters) {
       const bin = findBinary(tool, { dir: ctx.dir, root: ctx.root, kind: 'js' })
       if (bin) {
         return {
@@ -106,7 +127,7 @@ export default {
           cmd: bin,
           args: [
             ...(strict ? [LINT_STRICT_FLAG[tool]] : []),
-            ...(wantsFiles ? ctx.files : fallbackArgs),
+            ...(wantsFiles && ctx.files ? ctx.files : fallbackArgs),
           ],
           cwd: ctx.dir,
         }
@@ -118,6 +139,7 @@ export default {
     return { name: 'lint', skip: 'kein lint-Skript, oxlint oder eslint gefunden' }
   },
 
+  /** @param {StackContext} ctx */
   types(ctx) {
     const tool = findBinary('tsc', { dir: ctx.dir, root: ctx.root, kind: 'js' })
     if (!tool) return { name: 'tsc', skip: missingToolHint('tsc', 'js') }
@@ -136,6 +158,7 @@ export default {
     }
   },
 
+  /** @param {StackContext} ctx */
   test(ctx) {
     if (ctx.component.testCommand) {
       const [cmd, ...args] = ctx.component.testCommand.split(' ')
@@ -154,6 +177,7 @@ export default {
     return { name: 'tests', skip: 'weder vitest noch ein test-Skript gefunden' }
   },
 
+  /** @param {StackContext} ctx */
   build(ctx) {
     const scripts = packageScripts(ctx.dir)
     if (!scripts.build) return { name: 'build', skip: 'kein build-Skript' }

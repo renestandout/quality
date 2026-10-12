@@ -2,6 +2,8 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { findBinary, missingToolHint } from '../lib/tools.mjs'
 
+/** @import { Stack, StackContext, Step } from '../lib/types.mjs' */
+
 /**
  * Laravel- und PHP-Stack.
  *
@@ -10,6 +12,11 @@ import { findBinary, missingToolHint } from '../lib/tools.mjs'
  * PHP-Linter fände, findet PHPStan gründlicher.
  */
 
+/**
+ * @param {StackContext} ctx
+ * @param {string} tool
+ * @returns {Step}
+ */
 function phpstanStep(ctx, tool) {
   const configFile = ['phpstan.neon', 'phpstan.neon.dist', 'phpstan.dist.neon'].find((f) =>
     existsSync(join(ctx.dir, f)),
@@ -41,13 +48,16 @@ function phpstanStep(ctx, tool) {
   }
 }
 
+/** @satisfies {Stack} */
 export default {
   name: 'laravel',
   kind: 'php',
 
+  /** @param {StackContext} ctx */
   fmt(ctx) {
     const tool = findBinary('pint', { dir: ctx.dir, root: ctx.root, kind: 'php' })
     if (!tool) return { name: 'pint', skip: missingToolHint('pint', 'php') }
+    /** @type {string[]} */
     const args = []
     if (ctx.check) args.push('--test')
     if (ctx.files?.length) args.push(...ctx.files)
@@ -64,12 +74,14 @@ export default {
     return null
   },
 
+  /** @param {StackContext} ctx */
   types(ctx) {
     const tool = findBinary('phpstan', { dir: ctx.dir, root: ctx.root, kind: 'php' })
     if (!tool) return { name: 'phpstan', skip: missingToolHint('phpstan', 'php') }
     return phpstanStep(ctx, tool)
   },
 
+  /** @param {StackContext} ctx */
   test(ctx) {
     if (ctx.component.testCommand) {
       const [cmd, ...args] = ctx.component.testCommand.split(' ')
