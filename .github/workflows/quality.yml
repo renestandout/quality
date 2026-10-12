@@ -17,6 +17,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: npm
+
+      # Ohne die devDependencies findet das Gate weder prettier noch oxlint noch
+      # tsc und überspringt fmt, lint und types. Der Lauf wäre grün, ohne sie
+      # geprüft zu haben.
+      - name: Abhängigkeiten
+        run: npm ci
 
       # Bei einem Pull Request steht der Zweig nur für seinen eigenen Diff ein:
       # eine Formatierung, die der Zielbranch längst behoben hat, blockiert ihn

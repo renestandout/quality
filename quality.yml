@@ -15,4 +15,4 @@ tamper:
     - examples/
 
 components:
-  - { path: ".", stack: node-ts }
+  - { path: '.', stack: node-ts }
