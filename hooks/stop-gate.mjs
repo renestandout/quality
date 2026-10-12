@@ -11,7 +11,15 @@
  *   2. Harte Zeitgrenze; ein Timeout lässt durch, statt zu blockieren.
  *   3. Nach drei erfolglosen Runden endet das Blockieren. Die letzte Meldung
  *      weist den Agenten an, dem Menschen zu berichten, statt weiterzubasteln.
+ *
+ * Dazu hält sich der Hook in zwei Lagen ganz heraus und ändert nie eine Datei.
+ * Der Anlass: Am 12.10.2026 blockierte er die Koordinations-Session von
+ * rankscan dreimal — wegen eines fremden Befunds, der nur im Prüfumfang lag,
+ * weil `cc --integrieren` gerade einen Merge offen hielt. Eine Formatierung
+ * während dieses Gates hätte agent-desk als rotes Gate gewertet oder sie wäre
+ * unbemerkt im Merge-Commit gelandet.
  */
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -55,9 +63,45 @@ function clearAttempts(file) {
   }
 }
 
+function gitIn(root, args) {
+  try {
+    return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Läuft gerade eine Integration — ein Merge, Cherry-Pick, Revert oder Rebase?
+ * Dann gehören die uncommitteten Dateien nicht dieser Session. Den Pfad löst
+ * git auf: in einem Worktree liegen diese Marker nicht unter `.git/`.
+ */
+function integrationLaeuft(root) {
+  const marker = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply']
+  return marker.some((name) => {
+    const path = gitIn(root, ['rev-parse', '--path-format=absolute', '--git-path', name])
+    return path !== null && existsSync(path)
+  })
+}
+
+/**
+ * Ist das eine Koordinations-Session von agent-desk? Sie ändert keinen Code,
+ * sie integriert nur, und das Gate von `cc --integrieren` prüft dort selbst.
+ * Erkennbar ist sie nur an ihrer Instruktionsdatei im Haupt-Checkout.
+ */
+function koordinationsSession(root) {
+  const top = gitIn(root, ['rev-parse', '--show-toplevel']) ?? root
+  try {
+    return readFileSync(join(top, 'WORKER.md'), 'utf8').startsWith('# Koordinations-Instruktionen')
+  } catch {
+    return false
+  }
+}
+
 const input = await readHookInput()
 const root = findProjectRoot(input.cwd ?? process.cwd())
 if (!root) process.exit(0)
+if (integrationLaeuft(root) || koordinationsSession(root)) process.exit(0)
 
 const file = stateFile(input.session_id)
 const attempts = readAttempts(file)
@@ -70,8 +114,9 @@ if (attempts >= MAX_ATTEMPTS) {
 }
 
 // Ohne --quiet, damit die Meldungen der Werkzeuge beim Agenten ankommen und
-// nicht nur die Aussage, dass etwas rot ist.
-const { code, output, timedOut } = runQuality(['fast'], { cwd: root, timeoutMs: TIMEOUT_MS })
+// nicht nur die Aussage, dass etwas rot ist. Mit --check, weil ein Stop-Hook
+// prüft und nicht still Dateien umschreibt.
+const { code, output, timedOut } = runQuality(['fast', '--check'], { cwd: root, timeoutMs: TIMEOUT_MS })
 
 if (timedOut) {
   process.stderr.write(
@@ -102,6 +147,7 @@ if (next >= MAX_ATTEMPTS) {
 
 process.stderr.write(
   `Die Qualitätsprüfung ist rot (Versuch ${next} von ${MAX_ATTEMPTS}):\n\n${output.trim()}\n\n` +
-    `Behebe die Ursache und schliesse den Task danach erneut ab.\n`
+    `Behebe die Ursache und schliesse den Task danach erneut ab. ` +
+    `Eine Formatierung behebt \`quality fix\`.\n`
 )
 process.exit(2)

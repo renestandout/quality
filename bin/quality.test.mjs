@@ -14,13 +14,14 @@
  * entscheidet sich erst im Zusammenspiel von Stufe, Diff und Stack-Adapter.
  *
  * Das Formatierwerkzeug ist eine Attrappe. Sie hält fest, womit sie aufgerufen
- * wurde, und nennt jede Datei mit dem Wort UNFORMATTED unformatiert. Ob
+ * wurde, und nennt jede Datei mit dem Wort UNFORMATTED unformatiert. Mit
+ * --write entfernt sie das Wort, wie prettier eine Datei umschreibt. Ob
  * prettier richtig formatiert, ist hier nicht die Frage — die Frage ist, was
  * quality ihm übergibt und wie es sein Urteil wertet.
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -30,7 +31,7 @@ const QUALITY = join(dirname(fileURLToPath(import.meta.url)), 'quality')
 
 /** Attrappe statt prettier: nennt ihre Ziele und urteilt nach einem Marker. */
 const FAKE_PRETTIER = `#!/usr/bin/env node
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const targets = process.argv.slice(2).filter((a) => !a.startsWith('--'))
@@ -45,6 +46,10 @@ const walk = (dir) =>
 
 const files = targets.flatMap((t) => (t === '.' ? walk('.').map((f) => f.replace(/^\\.\\//, '')) : [t]))
 const bad = files.filter((f) => readFileSync(f, 'utf8').includes('UNFORMATTED'))
+if (process.argv.includes('--write')) {
+  for (const f of bad) writeFileSync(f, readFileSync(f, 'utf8').replace('UNFORMATTED', 'formatted'))
+  process.exit(0)
+}
 for (const f of bad) process.stdout.write('[warn] ' + f + '\\n')
 process.exit(bad.length > 0 ? 1 : 0)
 `
@@ -151,6 +156,39 @@ test('ohne --base bleibt die ganze Fläche hart', () => {
 
     assert.equal(code, 1, `Gate müsste rot sein, war aber ${code}:\n${output}`)
     assert.match(output, /legacy\.ts/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/*
+ * --check: die Stufen während der Arbeit (fix, fast) formatieren sonst
+ * schreibend. Der Stop-Hook darf das nicht: lief gerade ein Gate von
+ * `cc --integrieren`, wertete agent-desk die geänderte Datei als rotes Gate,
+ * oder die Formatierung landete unbemerkt im Merge-Commit.
+ */
+test('fast ohne --check formatiert schreibend', () => {
+  const dir = lage()
+  try {
+    writeFileSync(join(dir, 'mine.ts'), 'export const mine = 3 // UNFORMATTED\n')
+    const { output, code } = quality(dir, ['fast', '--only', 'fmt'])
+
+    assert.equal(code, 0, output)
+    assert.doesNotMatch(readFileSync(join(dir, 'mine.ts'), 'utf8'), /UNFORMATTED/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('fast --check meldet unformatierte Dateien, statt sie zu ändern', () => {
+  const dir = lage()
+  try {
+    writeFileSync(join(dir, 'mine.ts'), 'export const mine = 3 // UNFORMATTED\n')
+    const { output, code } = quality(dir, ['fast', '--only', 'fmt', '--check'])
+
+    assert.equal(code, 1, `Gate müsste rot sein, war aber ${code}:\n${output}`)
+    assert.match(output, /mine\.ts/)
+    assert.match(readFileSync(join(dir, 'mine.ts'), 'utf8'), /UNFORMATTED/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

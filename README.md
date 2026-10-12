@@ -110,6 +110,8 @@ Schärfe der Regeln, das Level den heute erreichten Stand.
 unterscheiden; `--all` prüft alles, `--files a,b` gibt sie explizit vor.
 Ab `task` wird nur noch geprüft, nicht mehr geschrieben — was in CI rot wird,
 soll dort nicht heimlich repariert werden.
+`--check` schaltet auch `fix` und `fast` auf prüfendes Formatieren um. Der
+Stop-Hook nutzt das.
 
 ### Wofür ein Zweig einsteht: `--base`
 
@@ -423,7 +425,7 @@ Skill, der den Arbeitsablauf und die Grenzen beschreibt.
 |---|---|---|
 | PreToolUse | vor Edit/Write | verweigert Schreibzugriff auf Baselines, Gate- und Linter-Konfiguration, CI-Workflows; bei einer Baseline nennt die Ablehnung `quality prune` |
 | PostToolUse | nach jedem Edit | formatiert und lintet **die eine** geänderte Datei, meldet Fundstellen zurück |
-| Stop | vor Task-Abschluss | führt `quality fast` aus und blockiert, solange etwas rot ist |
+| Stop | vor Task-Abschluss | führt `quality fast --check` aus und blockiert, solange etwas rot ist |
 
 Drei Eigenschaften sind dabei wichtiger als die Hooks selbst:
 
@@ -436,6 +438,16 @@ dem Menschen zu berichten, statt weiterzubasteln — und lässt beim nächsten
 Versuch durch. Ein Gate, das endlos blockiert, verbrennt Kontext und provoziert
 genau die Umgehungen, die es verhindern soll. Ein Timeout lässt ebenfalls
 durch, weist aber darauf hin, dass der Stand ungeprüft ist.
+
+**Der Stop-Hook ändert nichts und stört keine Integration.** Er formatiert
+nur prüfend; die Meldung nennt `quality fix` als Reparaturweg. In zwei Lagen
+hält er sich ganz heraus. Die erste ist eine laufende Integration: ein offener
+Merge, Cherry-Pick, Revert oder Rebase. Dann gehören die uncommitteten Dateien
+nicht der Session. Die zweite ist eine Koordinations-Session von agent-desk,
+erkennbar an `WORKER.md` mit `# Koordinations-Instruktionen`. Sie integriert
+nur, und das Gate von `cc --integrieren` prüft dort selbst. Formatierte der
+Hook während dieses Gates, wertete agent-desk das Gate als rot, oder die
+Formatierung landete unbemerkt im Merge-Commit.
 
 **Die Meldungen der Werkzeuge kommen vollständig beim Agenten an**, nicht nur
 die Information, dass etwas rot ist. „oxlint fehlgeschlagen" kann niemand
