@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -81,6 +82,47 @@ function lintScript(ctx, scriptText) {
   return step
 }
 
+/**
+ * Ungetrackte Dateien, die nur .git/info/exclude ausschliesst, relativ zu dir.
+ *
+ * Das Board legt WORKER.md in jedem Worktree an und schliesst sie dort aus.
+ * prettier liest nur .gitignore und .prettierignore und prüfte die Datei sonst
+ * mit. --ignore-path hilft nicht: prettier löst die Muster relativ zu
+ * .git/info auf. Ein Muster wie "/WORKER.md" griffe dann nie, und ein Muster,
+ * das auf einen Elternordner des Worktrees passt, nähme alles aus der Prüfung.
+ * Deshalb wertet git die Muster aus und liefert konkrete Pfade.
+ *
+ * Ohne git oder ausserhalb eines Repos ist die Liste leer.
+ *
+ * @param {string} dir
+ * @returns {string[]}
+ */
+function excludedByGit(dir) {
+  try {
+    /** @param {string[]} args */
+    const git = (args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: 'pipe' })
+    // Im verknüpften Worktree liegt info/exclude im gemeinsamen git-Verzeichnis.
+    const common = git(['rev-parse', '--path-format=absolute', '--git-common-dir']).trim()
+    const exclude = join(common, 'info', 'exclude')
+    if (!existsSync(exclude)) return []
+    return git(['ls-files', '-z', '--others', '--ignored', `--exclude-from=${exclude}`])
+      .split('\0')
+      .filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Maskiert die Zeichen, die prettier in einem Argument als Glob liest.
+ *
+ * @param {string} path
+ * @returns {string}
+ */
+function escapeGlob(path) {
+  return path.replace(/[\\*?[\]{}()!+@]/g, '\\$&')
+}
+
 /** @satisfies {Stack} */
 export default {
   name: 'react-ts',
@@ -90,7 +132,11 @@ export default {
   fmt(ctx) {
     const tool = findBinary('prettier', { dir: ctx.dir, root: ctx.root, kind: 'js' })
     if (!tool) return { name: 'prettier', skip: missingToolHint('prettier', 'js') }
-    const targets = ctx.files?.length ? ctx.files : ['.']
+    const excluded = excludedByGit(ctx.dir)
+    const targets = ctx.files?.length
+      ? ctx.files.filter((f) => !excluded.includes(f))
+      : ['.', ...excluded.map((f) => `!${escapeGlob(f)}`)]
+    if (targets.length === 0) return { name: 'prettier', skip: 'nur Dateien aus .git/info/exclude' }
     return {
       name: `prettier${ctx.check ? ' (prüfend)' : ''} (${ctx.component.path})`,
       cmd: tool,
