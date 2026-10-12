@@ -135,3 +135,58 @@ test('fmt: ausserhalb eines git-Repos bleiben die Argumente unverändert', (t) =
 
   assert.deepEqual(fmtArgs(context(dir)), ['--check', '--ignore-unknown', '.'])
 })
+
+test('fmt: ein grosser Ordner aus info/exclude erscheint als ein Muster', (t) => {
+  // In resplan schliesst info/exclude /node_modules aus. git listete jede
+  // Datei einzeln, über 1 MB Ausgabe. execFileSync brach mit ENOBUFS ab, und
+  // WORKER.md landete still wieder in der Prüfung. Je Datei ein Argument
+  // sprengte zudem ARG_MAX.
+  const dir = repo()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  appendFileSync(join(dir, '.git', 'info', 'exclude'), '/cache\nWORKER.md\n')
+  writeFileSync(join(dir, 'WORKER.md'), '# Auftrag\n')
+  mkdirSync(join(dir, 'cache'))
+  // 5000 Namen à 240 Zeichen ergeben rund 1,2 MB git-Ausgabe.
+  for (let i = 0; i < 5000; i++) {
+    writeFileSync(join(dir, 'cache', `${String(i).padStart(5, '0')}${'x'.repeat(235)}.ts`), '')
+  }
+
+  assert.deepEqual(fmtArgs(context(dir)), [
+    '--check',
+    '--ignore-unknown',
+    '.',
+    '!WORKER.md',
+    '!cache/**',
+  ])
+})
+
+test('fmt: Einzeldateien in einem Ordner aus info/exclude fallen aus der Dateiliste', (t) => {
+  const dir = repo()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  appendFileSync(join(dir, '.git', 'info', 'exclude'), '/cache\n')
+  mkdirSync(join(dir, 'cache'))
+  writeFileSync(join(dir, 'cache', 'x.ts'), '')
+
+  assert.deepEqual(fmtArgs(context(dir, { files: ['app.ts', 'cache/x.ts'] })), [
+    '--check',
+    '--ignore-unknown',
+    'app.ts',
+  ])
+})
+
+test('fmt: scheitert der git-Abgleich, meldet der Schritt einen Hinweis', (t) => {
+  // Ein stiller Rückfall auf eine leere Liste nimmt die ausgeschlossenen
+  // Dateien wieder in die Prüfung. Der rote Lauf braucht dann eine Erklärung.
+  const dir = repo()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  // git lehnt ein Verzeichnis als exclude-Datei ab.
+  rmSync(join(dir, '.git', 'info', 'exclude'))
+  mkdirSync(join(dir, '.git', 'info', 'exclude'))
+
+  const step = reactTs.fmt?.(context(dir))
+  assert.ok(
+    step && 'note' in step && step.note?.includes('info/exclude'),
+    'fmt meldet einen Hinweis',
+  )
+  assert.deepEqual(step.args, ['--check', '--ignore-unknown', '.'])
+})

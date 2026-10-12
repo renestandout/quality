@@ -83,7 +83,7 @@ function lintScript(ctx, scriptText) {
 }
 
 /**
- * Ungetrackte Dateien, die nur .git/info/exclude ausschliesst, relativ zu dir.
+ * Ungetrackte Pfade, die nur .git/info/exclude ausschliesst, relativ zu dir.
  *
  * Das Board legt WORKER.md in jedem Worktree an und schliesst sie dort aus.
  * prettier liest nur .gitignore und .prettierignore und prüfte die Datei sonst
@@ -92,25 +92,55 @@ function lintScript(ctx, scriptText) {
  * das auf einen Elternordner des Worktrees passt, nähme alles aus der Prüfung.
  * Deshalb wertet git die Muster aus und liefert konkrete Pfade.
  *
- * Ohne git oder ausserhalb eines Repos ist die Liste leer.
+ * --directory fasst einen ganz ausgeschlossenen Ordner zu einem Eintrag mit
+ * Schrägstrich am Ende zusammen. Ohne die Option listete git in resplan jede
+ * Datei unter node_modules einzeln: über 1 MB Ausgabe und zu viele Argumente
+ * für den prettier-Aufruf.
+ *
+ * Ohne git oder ausserhalb eines Repos ist die Liste leer. Scheitert git
+ * danach, nennt `problem` den Grund.
  *
  * @param {string} dir
- * @returns {string[]}
+ * @returns {{ paths: string[], problem?: string }}
  */
 function excludedByGit(dir) {
+  /** @param {string[]} args */
+  const git = (args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: 'pipe' })
+  let exclude
   try {
-    /** @param {string[]} args */
-    const git = (args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: 'pipe' })
     // Im verknüpften Worktree liegt info/exclude im gemeinsamen git-Verzeichnis.
     const common = git(['rev-parse', '--path-format=absolute', '--git-common-dir']).trim()
-    const exclude = join(common, 'info', 'exclude')
-    if (!existsSync(exclude)) return []
-    return git(['ls-files', '-z', '--others', '--ignored', `--exclude-from=${exclude}`])
-      .split('\0')
-      .filter(Boolean)
+    exclude = join(common, 'info', 'exclude')
   } catch {
-    return []
+    return { paths: [] }
   }
+  if (!existsSync(exclude)) return { paths: [] }
+  try {
+    const out = git([
+      'ls-files',
+      '-z',
+      '--others',
+      '--ignored',
+      '--directory',
+      `--exclude-from=${exclude}`,
+    ])
+    return { paths: out.split('\0').filter(Boolean) }
+  } catch (error) {
+    const reason = /** @type {NodeJS.ErrnoException & { stderr?: string }} */ (error)
+    const detail = reason.stderr?.trim() || reason.code || reason.message
+    return { paths: [], problem: `.git/info/exclude nicht ausgewertet (${detail})` }
+  }
+}
+
+/**
+ * Ein Pfad aus excludedByGit als prettier-Negation. Ein Ordner braucht "/**":
+ * prettier wertet "!ordner/" nicht aus und prüfte den Inhalt weiter.
+ *
+ * @param {string} path
+ * @returns {string}
+ */
+function negation(path) {
+  return path.endsWith('/') ? `!${escapeGlob(path)}**` : `!${escapeGlob(path)}`
 }
 
 /**
@@ -132,16 +162,20 @@ export default {
   fmt(ctx) {
     const tool = findBinary('prettier', { dir: ctx.dir, root: ctx.root, kind: 'js' })
     if (!tool) return { name: 'prettier', skip: missingToolHint('prettier', 'js') }
-    const excluded = excludedByGit(ctx.dir)
+    const { paths: excluded, problem } = excludedByGit(ctx.dir)
+    // Ein Eintrag mit "/" am Ende steht für den ganzen Ordner.
+    /** @param {string} f */
+    const isExcluded = (f) => excluded.some((p) => (p.endsWith('/') ? f.startsWith(p) : f === p))
     const targets = ctx.files?.length
-      ? ctx.files.filter((f) => !excluded.includes(f))
-      : ['.', ...excluded.map((f) => `!${escapeGlob(f)}`)]
+      ? ctx.files.filter((f) => !isExcluded(f))
+      : ['.', ...excluded.map(negation)]
     if (targets.length === 0) return { name: 'prettier', skip: 'nur Dateien aus .git/info/exclude' }
     return {
       name: `prettier${ctx.check ? ' (prüfend)' : ''} (${ctx.component.path})`,
       cmd: tool,
       args: [ctx.check ? '--check' : '--write', '--ignore-unknown', ...targets],
       cwd: ctx.dir,
+      note: problem,
     }
   },
 

@@ -19,14 +19,14 @@ composer require --dev larastan/larastan laravel/pint   # Werkzeuge des laravel-
 JS/TS-Projekt:
 
 ```bash
-npm  install -D github:renestandout/quality#v0.2.10 prettier
-pnpm add     -D github:renestandout/quality#v0.2.10 prettier
+npm  install -D github:renestandout/quality#v0.2.11 prettier
+pnpm add     -D github:renestandout/quality#v0.2.11 prettier
 ```
 
 Python-Projekt — über npm, mit einer `package.json`, die nur dafür da ist:
 
 ```bash
-npm install -D github:renestandout/quality#v0.2.10
+npm install -D github:renestandout/quality#v0.2.11
 pip  install ruff mypy pytest pip-audit
 ```
 
@@ -506,9 +506,11 @@ projektübergreifend zählt sie nicht genug, um dafür halbe Codebasen anzufasse
 
 **`.git/info/exclude`** gilt auch für prettier. prettier liest selbst nur
 `.gitignore` und `.prettierignore`. Das Gate fragt git nach den ungetrackten
-Dateien, die `info/exclude` ausschliesst, und nimmt sie aus der Prüfung. So
-braucht die `WORKER.md` des Boards in keinem Projekt eine Zeile in
-`.prettierignore`.
+Dateien, die `info/exclude` ausschliesst, und nimmt sie aus der Prüfung. Ein
+ganz ausgeschlossener Ordner zählt dabei als ein Eintrag, auch ein grosses
+`node_modules`. So braucht die `WORKER.md` des Boards in keinem Projekt eine
+Zeile in `.prettierignore`. Scheitert der Abgleich, nennt der fmt-Schritt den
+Grund als Hinweis.
 
 ## Entwicklung
 
