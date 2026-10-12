@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -39,6 +39,40 @@ function context(dir, extra = {}) {
     check: true,
     full: true,
     ...extra,
+  })
+}
+
+/**
+ * Füllt einen Ordner mit so vielen Dateien, dass die Ausgabe von git ls-files
+ * über die Standardgrenze von 1 MB steigt: 5000 Namen à 240 Zeichen.
+ *
+ * @param {string} folder
+ * @param {string} ext
+ */
+function fillFolder(folder, ext) {
+  mkdirSync(folder, { recursive: true })
+  for (let i = 0; i < 5000; i++) {
+    writeFileSync(join(folder, `${String(i).padStart(5, '0')}${'x'.repeat(235)}${ext}`), '')
+  }
+}
+
+/**
+ * Legt ein Skript "git" in einen eigenen Ordner und stellt den Ordner im PATH
+ * nach vorn. Das Skript ersetzt git für diesen Test.
+ *
+ * @param {import('node:test').TestContext} t
+ * @param {string} script
+ */
+function fakeGit(t, script) {
+  const bin = mkdtempSync(join(tmpdir(), 'quality-fake-git-'))
+  const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+  writeFileSync(join(bin, 'git'), `#!/bin/sh\nREAL_GIT=${real}\n${script}\n`)
+  chmodSync(join(bin, 'git'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  t.after(() => {
+    process.env.PATH = path
+    rmSync(bin, { recursive: true, force: true })
   })
 }
 
@@ -145,11 +179,7 @@ test('fmt: ein grosser Ordner aus info/exclude erscheint als ein Muster', (t) =>
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   appendFileSync(join(dir, '.git', 'info', 'exclude'), '/cache\nWORKER.md\n')
   writeFileSync(join(dir, 'WORKER.md'), '# Auftrag\n')
-  mkdirSync(join(dir, 'cache'))
-  // 5000 Namen à 240 Zeichen ergeben rund 1,2 MB git-Ausgabe.
-  for (let i = 0; i < 5000; i++) {
-    writeFileSync(join(dir, 'cache', `${String(i).padStart(5, '0')}${'x'.repeat(235)}.ts`), '')
-  }
+  fillFolder(join(dir, 'cache'), '.ts')
 
   assert.deepEqual(fmtArgs(context(dir)), [
     '--check',
@@ -189,4 +219,45 @@ test('fmt: scheitert der git-Abgleich, meldet der Schritt einen Hinweis', (t) =>
     'fmt meldet einen Hinweis',
   )
   assert.deepEqual(step.args, ['--check', '--ignore-unknown', '.'])
+})
+
+test('fmt: ein Ordner voller Dateien aus einem Dateimuster erscheint als ein Muster', (t) => {
+  // Trifft ein Dateimuster jede Datei eines ungetrackten Ordners, listet git
+  // den Ordner und dazu jede Datei einzeln. Die Ausgabe übersteigt 1 MB, und
+  // die Einzeldateien sind neben "!logs/**" überflüssig.
+  const dir = repo()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  appendFileSync(join(dir, '.git', 'info', 'exclude'), '*.log\n')
+  fillFolder(join(dir, 'logs'), '.log')
+
+  assert.deepEqual(fmtArgs(context(dir)), ['--check', '--ignore-unknown', '.', '!logs/**'])
+})
+
+test('fmt: scheitert git schon beim Finden des git-Verzeichnisses, meldet der Schritt einen Hinweis', (t) => {
+  // Ein git vor 2.31 kennt --path-format nicht. Still blieb das nur richtig,
+  // solange das Verzeichnis kein Repo ist.
+  const dir = repo()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  fakeGit(t, "echo 'error: unknown option' >&2; exit 129")
+
+  const step = reactTs.fmt?.(context(dir))
+  assert.ok(
+    step && 'note' in step && step.note?.includes('unknown option'),
+    'fmt meldet einen Hinweis',
+  )
+})
+
+test('fmt: der Hinweis übernimmt nur die erste Zeile der git-Meldung', (t) => {
+  // Die Zusammenfassung zeigt je Schritt eine Zeile.
+  const dir = repo()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  fakeGit(
+    t,
+    'if [ "$1" = rev-parse ]; then exec "$REAL_GIT" "$@"; fi\n' +
+      "printf 'fatal: eins\\nhint: zwei\\n' >&2; exit 128",
+  )
+
+  const step = reactTs.fmt?.(context(dir))
+  assert.ok(step && 'note' in step && step.note, 'fmt meldet einen Hinweis')
+  assert.equal(step.note, '.git/info/exclude nicht ausgewertet (fatal: eins)')
 })

@@ -95,27 +95,34 @@ function lintScript(ctx, scriptText) {
  * --directory fasst einen ganz ausgeschlossenen Ordner zu einem Eintrag mit
  * Schrägstrich am Ende zusammen. Ohne die Option listete git in resplan jede
  * Datei unter node_modules einzeln: über 1 MB Ausgabe und zu viele Argumente
- * für den prettier-Aufruf.
+ * für den prettier-Aufruf. Trifft ein Dateimuster wie "*.log" jede Datei eines
+ * ungetrackten Ordners, listet git den Ordner und dazu jede Datei. Die Dateien
+ * unter einem gelisteten Ordner fallen deshalb weg, und der Puffer ist gross
+ * genug für eine solche Ausgabe.
  *
- * Ohne git oder ausserhalb eines Repos ist die Liste leer. Scheitert git
- * danach, nennt `problem` den Grund.
+ * Ohne git oder ausserhalb eines Repos ist die Liste leer. Jeder andere Fehler
+ * von git nennt in `problem` den Grund, denn die ausgeschlossenen Dateien
+ * landen dann wieder in der Prüfung.
  *
  * @param {string} dir
  * @returns {{ paths: string[], problem?: string }}
  */
 function excludedByGit(dir) {
   /** @param {string[]} args */
-  const git = (args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: 'pipe' })
-  let exclude
+  const git = (args) =>
+    execFileSync('git', args, {
+      cwd: dir,
+      encoding: 'utf8',
+      stdio: 'pipe',
+      maxBuffer: 64 * 1024 * 1024,
+      // Englische Meldungen: "not a git repository" ist sonst nicht erkennbar.
+      env: { ...process.env, LC_ALL: 'C' },
+    })
   try {
     // Im verknüpften Worktree liegt info/exclude im gemeinsamen git-Verzeichnis.
     const common = git(['rev-parse', '--path-format=absolute', '--git-common-dir']).trim()
-    exclude = join(common, 'info', 'exclude')
-  } catch {
-    return { paths: [] }
-  }
-  if (!existsSync(exclude)) return { paths: [] }
-  try {
+    const exclude = join(common, 'info', 'exclude')
+    if (!existsSync(exclude)) return { paths: [] }
     const out = git([
       'ls-files',
       '-z',
@@ -124,10 +131,15 @@ function excludedByGit(dir) {
       '--directory',
       `--exclude-from=${exclude}`,
     ])
-    return { paths: out.split('\0').filter(Boolean) }
+    const paths = out.split('\0').filter(Boolean)
+    const folders = paths.filter((p) => p.endsWith('/'))
+    return { paths: paths.filter((p) => !folders.some((f) => p !== f && p.startsWith(f))) }
   } catch (error) {
     const reason = /** @type {NodeJS.ErrnoException & { stderr?: string }} */ (error)
-    const detail = reason.stderr?.trim() || reason.code || reason.message
+    if (reason.code === 'ENOENT') return { paths: [] }
+    const stderr = reason.stderr?.trim() ?? ''
+    if (stderr.includes('not a git repository')) return { paths: [] }
+    const detail = stderr.split('\n')[0] || reason.code || reason.message
     return { paths: [], problem: `.git/info/exclude nicht ausgewertet (${detail})` }
   }
 }
