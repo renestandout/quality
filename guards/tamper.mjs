@@ -11,6 +11,8 @@
  * ein Mensch. Der legitime Fall bleibt möglich, aber sichtbar und bewusst.
  */
 
+import { isDeepStrictEqual } from 'node:util'
+
 /**
  * Eine hinzugefügte Zeile im Diff, mit ihrer Nummer im Zielzustand.
  *
@@ -30,12 +32,15 @@
 /**
  * Eine Datei aus dem Diff, wie parseDiff sie liefert.
  * `removed` fehlt bei Dateien, die nur als hinzugefügt gelten (untracked).
+ * `ownVersionOnly` setzt tamper-git.mjs bei einem package-lock.json, dessen
+ * beide Fassungen sich nur in der eigenen Paketversion unterscheiden.
  *
  * @typedef {object} DiffFile
  * @property {string} path
  * @property {AddedLine[]} added
  * @property {RemovedLine[] | undefined} [removed]
  * @property {boolean} deleted
+ * @property {boolean | undefined} [ownVersionOnly]
  */
 
 /**
@@ -143,6 +148,52 @@ export const PROTECTED_PATHS = [
 ]
 
 const LOCKFILES = /(^|\/)(composer\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/
+
+/**
+ * Das einzige Lockfile, das die Version des eigenen Pakets trägt.
+ *
+ * Gemessen am 12.10.2026: composer.lock, pnpm-lock.yaml und yarn.lock führen
+ * sie nicht. composer.lock ändert bei einem Sprung nur den content-hash. Der
+ * ändert sich aber auch bei einer neuen Anforderung und belegt deshalb nichts.
+ */
+export const NPM_LOCKFILE = /(^|\/)package-lock\.json$/
+
+/**
+ * Unterscheiden sich zwei Fassungen eines package-lock.json nur in der
+ * Version des eigenen Pakets?
+ *
+ * Verglichen wird das geparste JSON, nicht die Diff-Zeilen. Die Version steht
+ * an zwei Stellen: oben und unter `packages[""]`. Das Format v1 kennt nur die
+ * obere. Beide fallen vor dem Vergleich weg, alles andere muss gleich sein.
+ *
+ * Im Zweifel `false`: fehlt eine Fassung oder ist sie kein JSON-Objekt, gilt
+ * die Änderung als echte Abhängigkeitsänderung.
+ *
+ * @param {string | null} before
+ * @param {string | null} after
+ * @returns {boolean}
+ */
+export function lockfileOnlyBumpsOwnVersion(before, after) {
+  if (before === null || after === null) return false
+
+  const withoutOwnVersion = (/** @type {string} */ text) => {
+    const lock = JSON.parse(text)
+    if (lock === null || typeof lock !== 'object' || Array.isArray(lock)) return null
+    delete lock.version
+    const root = lock.packages?.['']
+    if (root && typeof root === 'object') delete root.version
+    return lock
+  }
+
+  try {
+    const a = withoutOwnVersion(before)
+    const b = withoutOwnVersion(after)
+    if (a === null || b === null) return false
+    return isDeepStrictEqual(a, b)
+  } catch {
+    return false
+  }
+}
 
 /**
  * Fremdcode. Wird nie bewertet — auch dann nicht, wenn ein Projekt seine
@@ -557,7 +608,10 @@ export function analyseDiff(files, { botAuthor = false, ignorePaths = [] } = {})
       }
     }
 
-    if (LOCKFILES.test(file.path) && !botAuthor) {
+    // Ein reiner Versionssprung ändert keine Abhängigkeit. Nur bei
+    // package-lock.json lässt sich das belegen, siehe NPM_LOCKFILE.
+    const ownVersionOnly = file.ownVersionOnly === true && NPM_LOCKFILE.test(file.path)
+    if (LOCKFILES.test(file.path) && !botAuthor && !ownVersionOnly) {
       findings.push({
         rule: 'dependency.changed',
         path: file.path,
