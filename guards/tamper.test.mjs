@@ -11,6 +11,7 @@ import {
   SOURCE_FILE,
   analyseDiff,
   findException,
+  lockfileOnlyBumpsOwnVersion,
   isTestFile,
   parseDiff,
 } from './tamper.mjs'
@@ -1236,4 +1237,150 @@ test('genau die drei Baselines kennen eine Richtung, sonst nichts', () => {
   // Schutz. Diese Zusicherung hält fest, welche Pfade gemeint sind.
   const richtung = PROTECTED_PATHS.filter((p) => p.shrinkOnly).map((p) => p.label)
   assert.deepEqual(richtung, ['PHPStan-Baseline', 'gitleaks-Baseline', 'ESLint-Suppressions'])
+})
+
+/**
+ * Ein package-lock.json im Format v3, wie npm es schreibt.
+ *
+ * @param {string} version
+ * @param {string} oxlint
+ */
+const npmLock = (version, oxlint = '1.87.0') =>
+  JSON.stringify(
+    {
+      name: '@standout/quality',
+      version,
+      lockfileVersion: 3,
+      requires: true,
+      packages: {
+        '': { name: '@standout/quality', version, devDependencies: { oxlint: '^1.87.0' } },
+        'node_modules/oxlint': { version: oxlint, dev: true },
+      },
+    },
+    null,
+    2,
+  ) + '\n'
+
+test('Lockfile: nur die eigene Version geändert, sonst nichts', () => {
+  assert.equal(lockfileOnlyBumpsOwnVersion(npmLock('0.2.9'), npmLock('0.2.10')), true)
+})
+
+test('Lockfile: eigene Version und eine Abhängigkeit geändert', () => {
+  assert.equal(lockfileOnlyBumpsOwnVersion(npmLock('0.2.9'), npmLock('0.2.10', '1.88.0')), false)
+})
+
+test('Lockfile: nur eine Abhängigkeit geändert', () => {
+  assert.equal(lockfileOnlyBumpsOwnVersion(npmLock('0.2.9'), npmLock('0.2.9', '1.88.0')), false)
+})
+
+test('Lockfile: geänderter Paketname zählt nicht als Versionssprung', () => {
+  const renamed = npmLock('0.2.10').replaceAll('@standout/quality', '@standout/anders')
+  assert.equal(lockfileOnlyBumpsOwnVersion(npmLock('0.2.9'), renamed), false)
+})
+
+test('Lockfile: Format v1 trägt die Version nur oben', () => {
+  /** @param {string} version */
+  const v1 = (version) =>
+    JSON.stringify({
+      name: 'p',
+      version,
+      lockfileVersion: 1,
+      dependencies: { a: { version: '1.0.0' } },
+    })
+  assert.equal(lockfileOnlyBumpsOwnVersion(v1('1.0.0'), v1('1.0.1')), true)
+})
+
+test('Lockfile: ungültiges JSON oder fehlende Fassung zählt nie als Versionssprung', () => {
+  assert.equal(lockfileOnlyBumpsOwnVersion('{', npmLock('0.2.10')), false)
+  assert.equal(lockfileOnlyBumpsOwnVersion(npmLock('0.2.9'), '{'), false)
+  assert.equal(lockfileOnlyBumpsOwnVersion(null, npmLock('0.2.10')), false)
+  assert.equal(lockfileOnlyBumpsOwnVersion('[]', '[]'), false)
+})
+
+test('Lockfile: ein reiner Versionssprung meldet nicht', () => {
+  const findings = analyseDiff([
+    { path: 'package-lock.json', added: [], removed: [], deleted: false, ownVersionOnly: true },
+  ])
+  assert.deepEqual(findings, [])
+})
+
+test('Lockfile: die Markierung gilt nur für package-lock.json', () => {
+  // Bei composer.lock zeigt allein der content-hash den Sprung an. Der ändert
+  // sich auch bei einer neuen Anforderung — er belegt also nichts.
+  const findings = analyseDiff([
+    { path: 'composer.lock', added: [], removed: [], deleted: false, ownVersionOnly: true },
+  ])
+  assert.deepEqual(rules(findings), ['dependency.changed'])
+})
+
+/**
+ * Ein Repository mit zwei Commits: package-lock.json vorher und nachher.
+ *
+ * @param {string} before
+ * @param {string} after
+ */
+function lockFixture(before, after) {
+  const root = mkdtempSync(join(tmpdir(), 'quality-lock-'))
+  const git = (/** @type {string[]} */ ...args) =>
+    execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+  git('init', '--quiet')
+  git('config', 'user.email', 'test@example.com')
+  git('config', 'user.name', 'Test')
+  writeFileSync(join(root, 'package-lock.json'), before)
+  git('add', '.')
+  git('commit', '--quiet', '-m', 'Lockfile')
+  writeFileSync(join(root, 'package-lock.json'), after)
+  git('add', '.')
+  git('commit', '--quiet', '--allow-empty', '-m', 'Lockfile geändert')
+  return root
+}
+
+test('echter Diff: ein reiner Versionssprung im Lockfile meldet in CI nicht', () => {
+  const root = lockFixture(npmLock('0.2.9'), npmLock('0.2.10'))
+  try {
+    assert.equal(runTamper({ root, base: 'HEAD~1', quiet: true }), 0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('echter Diff: Versionssprung mit neuer Abhängigkeit meldet in CI weiterhin', () => {
+  const root = lockFixture(npmLock('0.2.9'), npmLock('0.2.10', '1.88.0'))
+  try {
+    assert.equal(runTamper({ root, base: 'HEAD~1', quiet: true }), 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('echter Diff: ein neu angelegtes Lockfile meldet in CI weiterhin', () => {
+  const root = lockFixture(npmLock('0.2.9'), npmLock('0.2.9'))
+  try {
+    execFileSync('git', ['rm', '--quiet', 'package-lock.json'], { cwd: root })
+    execFileSync('git', ['commit', '--quiet', '-m', 'weg'], { cwd: root })
+    writeFileSync(join(root, 'package-lock.json'), npmLock('0.2.10'))
+    execFileSync('git', ['add', '.'], { cwd: root })
+    execFileSync('git', ['commit', '--quiet', '-m', 'neu'], { cwd: root })
+    assert.equal(runTamper({ root, base: 'HEAD~1', quiet: true }), 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('lokal: ein reiner Versionssprung erzeugt keinen Hinweis', () => {
+  const root = lockFixture(npmLock('0.2.9'), npmLock('0.2.9'))
+  writeFileSync(join(root, 'package-lock.json'), npmLock('0.2.10'))
+  /** @type {string[]} */
+  const output = []
+  const original = process.stdout.write
+  process.stdout.write = /** @type {typeof process.stdout.write} */ (
+    (/** @type {string} */ chunk) => output.push(String(chunk)) > 0
+  )
+  try {
+    assert.equal(runTamper({ root }), 0)
+  } finally {
+    process.stdout.write = original
+    rmSync(root, { recursive: true, force: true })
+  }
+  assert.match(output.join(''), /keine Umgehungsmuster/)
 })

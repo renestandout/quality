@@ -4,9 +4,11 @@ import { join } from 'node:path'
 import { c } from '../lib/run.mjs'
 import {
   EXCEPTION_TRAILER,
+  NPM_LOCKFILE,
   SOFT_LOCALLY,
   analyseDiff,
   findException,
+  lockfileOnlyBumpsOwnVersion,
   parseDiff,
 } from './tamper.mjs'
 
@@ -129,6 +131,70 @@ function untrackedAsAdded(root, { includeCached = false } = {}) {
 }
 
 /**
+ * Liest eine Datei in einem bestimmten Commit. `null`, wenn es sie dort nicht gibt.
+ *
+ * @param {string} root
+ * @param {string} rev
+ * @param {string} path
+ * @returns {string | null}
+ */
+function showAt(root, rev, path) {
+  try {
+    return execFileSync('git', ['show', `${rev}:${path}`], {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Markiert jedes package-lock.json, das sich nur in der eigenen Paketversion
+ * ändert. Dafür liest sie beide Fassungen und übergibt sie dem JSON-Vergleich.
+ *
+ * Die Fassungen passen zum geprüften Diff: mit `base` der Stand an der
+ * Merge-Basis gegen HEAD (wie `base...HEAD`), ohne `base` HEAD gegen das
+ * Arbeitsverzeichnis. Fehlt eine Fassung, bleibt die Datei unmarkiert und
+ * die Regel meldet wie bisher.
+ *
+ * @param {DiffFile[]} files
+ * @param {string} root
+ * @param {string | null} base
+ * @returns {DiffFile[]}
+ */
+function markOwnVersionBumps(files, root, base) {
+  /** @type {string | null | undefined} */
+  let mergeBase
+  return files.map((file) => {
+    if (file.deleted || !NPM_LOCKFILE.test(file.path)) return file
+    let before
+    let after
+    if (base) {
+      if (mergeBase === undefined) {
+        try {
+          mergeBase = git(['merge-base', base, 'HEAD'], root).trim()
+        } catch {
+          mergeBase = null
+        }
+      }
+      before = mergeBase ? showAt(root, mergeBase, file.path) : null
+      after = showAt(root, 'HEAD', file.path)
+    } else {
+      before = showAt(root, 'HEAD', file.path)
+      try {
+        after = readFileSync(join(root, file.path), 'utf8')
+      } catch {
+        after = null
+      }
+    }
+    return lockfileOnlyBumpsOwnVersion(before, after) ? { ...file, ownVersionOnly: true } : file
+  })
+}
+
+/**
  * Ermittelt, ob der Diff von einem Bot stammt (Renovate, Dependabot).
  *
  * @param {string} root
@@ -183,7 +249,7 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
   // Nur im lokalen Modus: dort sind neu angelegte Dateien noch nicht erfasst.
   // Mit `base` sind sie längst Teil der Commits und stehen im Diff.
   const files = [
-    ...parseDiff(diffText),
+    ...markOwnVersionBumps(parseDiff(diffText), root, base),
     ...(base ? [] : untrackedAsAdded(root, { includeCached: !committed })),
   ]
   const botAuthor = isBotAuthor(root, base)
