@@ -15,7 +15,7 @@ baseline: false
 
 components:
   # Einzelne Anwendung in der Repo-Wurzel:
-  - { path: ".", stack: laravel, php: "8.3", phpstan_level: 5 }
+  - { path: '.', stack: laravel, php: '8.3', phpstan_level: 5 }
 
   # Monorepo mit mehreren Anwendungen:
   # - path: backend

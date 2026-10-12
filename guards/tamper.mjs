@@ -161,7 +161,8 @@ export const LINE_RULES = [
     // `# type: ignore` (mypy), `# noqa` (ruff/flake8) und die Datei-weiten
     // Varianten. Beide sind der Normalfall, mit dem in Python ein Befund
     // stillgelegt wird — das Gegenstueck zu @ts-ignore und eslint-disable.
-    pattern: /#\s*(type:\s*ignore|noqa|mypy:\s*(ignore-errors|disable)|ruff:\s*noqa|pyright:\s*ignore)\b/,
+    pattern:
+      /#\s*(type:\s*ignore|noqa|mypy:\s*(ignore-errors|disable)|ruff:\s*noqa|pyright:\s*ignore)\b/,
     label: 'Python-Suppression',
     scope: 'source',
   },
@@ -200,7 +201,8 @@ export const REMOVED_LINE_RULES = [
     // $this->assertSame( · self::assertTrue( · assert.equal( · expect(x)
     // Dazu Pythons nacktes Statement `assert x == 1`: es hat weder Klammer
     // noch Punkt und fiel deshalb durch jedes der Muster darueber.
-    pattern: /\bassert\w*\s*[.(]|->\s*assert\w*\s*\(|::\s*assert\w*\s*\(|\bexpect\s*\(|^\s*assert\s+\S/,
+    pattern:
+      /\bassert\w*\s*[.(]|->\s*assert\w*\s*\(|::\s*assert\w*\s*\(|\bexpect\s*\(|^\s*assert\s+\S/,
     label: 'netto entfernte Assertions',
     scope: 'test',
   },
@@ -392,7 +394,8 @@ const shape = (text) => text.replace(/,[ \t]*$/, '')
  * kein Schrumpfen, und `quality prune` erzeugt sie nicht.
  */
 export function baselineOnlyShrinks(file) {
-  const content = (lines) => (lines ?? []).map((entry) => entry.text).filter((text) => text.trim() !== '')
+  const content = (lines) =>
+    (lines ?? []).map((entry) => entry.text).filter((text) => text.trim() !== '')
   const added = content(file.added)
   const removed = content(file.removed)
 

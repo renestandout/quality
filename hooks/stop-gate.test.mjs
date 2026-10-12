@@ -14,7 +14,15 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -49,7 +57,10 @@ function projekt() {
   git(['init', '-q', '-b', 'main'], dir)
   git(['config', 'user.email', 'test@example.com'], dir)
   git(['config', 'user.name', 'Test'], dir)
-  schreibe('quality.yml', 'version: 1\nlevel: standard\nbaseline: false\ncomponents:\n  - { path: ".", stack: react-ts }\n')
+  schreibe(
+    'quality.yml',
+    'version: 1\nlevel: standard\nbaseline: false\ncomponents:\n  - { path: ".", stack: react-ts }\n',
+  )
   schreibe('.gitignore', 'node_modules/\n')
   schreibe('a.ts', 'export const a = 1\n')
   git(['add', '-A'], dir)
@@ -73,7 +84,11 @@ let sitzung = 0
 
 function stopHook(dir) {
   const input = JSON.stringify({ cwd: dir, session_id: `test-${process.pid}-${++sitzung}` })
-  const r = spawnSync(process.execPath, [HOOK], { input, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } })
+  const r = spawnSync(process.execPath, [HOOK], {
+    input,
+    encoding: 'utf8',
+    env: { ...process.env, NO_COLOR: '1' },
+  })
   return { code: r.status, stderr: r.stderr }
 }
 
@@ -127,7 +142,10 @@ test('während eines offenen Merges hält sich der Hook heraus', () => {
 test('in einer Koordinations-Session hält sich der Hook heraus', () => {
   const dir = projekt()
   try {
-    writeFileSync(join(dir, 'WORKER.md'), '# Koordinations-Instruktionen\n\nDu koordinierst das Projekt.\n')
+    writeFileSync(
+      join(dir, 'WORKER.md'),
+      '# Koordinations-Instruktionen\n\nDu koordinierst das Projekt.\n',
+    )
     const { code, stderr } = stopHook(dir)
 
     assert.equal(code, 0, stderr)
@@ -139,7 +157,10 @@ test('in einer Koordinations-Session hält sich der Hook heraus', () => {
 test('in einer Worker-Session prüft der Hook weiterhin', () => {
   const dir = projekt()
   try {
-    writeFileSync(join(dir, 'WORKER.md'), '# Worker-Instruktionen\n\nDu bist ein fokussierter Worker.\n')
+    writeFileSync(
+      join(dir, 'WORKER.md'),
+      '# Worker-Instruktionen\n\nDu bist ein fokussierter Worker.\n',
+    )
     const { code, stderr } = stopHook(dir)
 
     assert.equal(code, 2, stderr)

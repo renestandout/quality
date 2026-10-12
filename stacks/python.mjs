@@ -134,7 +134,8 @@ export default {
     }
     const tool = findBinary('pytest', { dir: ctx.dir, root: ctx.root, kind: 'py' })
     if (!tool) return { name: 'pytest', skip: missingToolHint('pytest', 'py') }
-    if (!hasTests(ctx.dir)) return { name: 'pytest', skip: 'keine Tests in der Komponente gefunden' }
+    if (!hasTests(ctx.dir))
+      return { name: 'pytest', skip: 'keine Tests in der Komponente gefunden' }
     // Geaenderte Quelldateien an pytest zu reichen, sammelt keine Tests und
     // endet mit Exit 5. Nur Testdateien zaehlen; ist keine dabei, laeuft die
     // ganze Suite — `test` gibt es ohnehin erst ab der Stufe `task`.

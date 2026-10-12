@@ -42,11 +42,11 @@ hart auf eine Baseline. Für `medium_3_0` sind das **20 % von 2 vCPU**, also
 CI ist dafür das ungünstigste Lastprofil überhaupt: Volllast in Schüben,
 minutenlang. Gemessen am 18.08.2026 mit rankscan:
 
-| | mit Burst-Guthaben | ohne (Dauerzustand) |
-|---|---|---|
-| `quality` | 6:38 | 11:52 |
-| `tests` (5300 Tests) | — | 33:32 |
-| Lauf gesamt, seriell | — | **48 min** |
+|                      | mit Burst-Guthaben | ohne (Dauerzustand) |
+| -------------------- | ------------------ | ------------------- |
+| `quality`            | 6:38               | 11:52               |
+| `tests` (5300 Tests) | —                  | 33:32               |
+| Lauf gesamt, seriell | —                  | **48 min**          |
 
 `BurstCapacityPercentage` lag danach bei 0,0005 %, `CPUUtilization`
 konstant bei exakt 20,00 % — die Drosselung ist im Graphen als gerade Linie
@@ -119,12 +119,12 @@ Workflow als vorhanden voraussetzt.
 `renestandout` ist ein persönlicher Account. Org-Runner gibt es dort nicht —
 jede Runner-Instanz gehört zu genau einem Repository. Verteilung:
 
-| Repository | Instanzen | Grund |
-|---|---|---|
-| renestandout/rankscan | 2 | `tests` belegt eine Instanz rund 10 Minuten, siehe unten |
-| renestandout/adboard | 1 | zwei kurze Jobs |
-| renestandout/rankscanpage | 1 | zwei kurze Jobs |
-| renestandout/rankscanmautic | 1 | shellcheck + gitleaks, Sekunden |
+| Repository                  | Instanzen | Grund                                                    |
+| --------------------------- | --------- | -------------------------------------------------------- |
+| renestandout/rankscan       | 2         | `tests` belegt eine Instanz rund 10 Minuten, siehe unten |
+| renestandout/adboard        | 1         | zwei kurze Jobs                                          |
+| renestandout/rankscanpage   | 1         | zwei kurze Jobs                                          |
+| renestandout/rankscanmautic | 1         | shellcheck + gitleaks, Sekunden                          |
 
 **Eine Instanz je Repo, ausser bei rankscan.** Der naheliegende Gedanke ist,
 mehrere Runner zu registrieren, damit die Jobs eines Laufs parallel starten.
@@ -142,12 +142,12 @@ Kern. Vorher wartete der Required Check `quality` im Schnitt 8 Minuten hinter
 
 Gemessen am 03.10.2026 auf cpx32, main-Lauf 37148357345 mit zwei Instanzen:
 
-| Job | Wartezeit | Laufzeit | vorher Ø (eine Instanz, cpx22) |
-|---|---|---|---|
-| `tests` | 0:02 | 10:07 | 11:26 |
-| `quality` | 0:02 | 1:06 | 8:16 Wartezeit + 1:17 |
-| `prod-build` | 2:11 | 0:47 | 7:28 Wartezeit + 0:50 |
-| `audit` | 4:00 | 0:23 | 10:03 Wartezeit + 0:26 |
+| Job          | Wartezeit | Laufzeit | vorher Ø (eine Instanz, cpx22) |
+| ------------ | --------- | -------- | ------------------------------ |
+| `tests`      | 0:02      | 10:07    | 11:26                          |
+| `quality`    | 0:02      | 1:06     | 8:16 Wartezeit + 1:17          |
+| `prod-build` | 2:11      | 0:47     | 7:28 Wartezeit + 0:50          |
+| `audit`      | 4:00      | 0:23     | 10:03 Wartezeit + 0:26         |
 
 `tests` wurde neben den anderen Jobs nicht langsamer. Auf der VM lag die Last
 bei höchstens 4,8, der Speicher bei höchstens 3,4 GB, der Swap blieb leer.
@@ -166,12 +166,12 @@ Parallelbetrieb aber `db_test_1` bis `db_test_N` an.
 
 rankscan, seriell, 19.08.2026 — dieselbe Suite auf beiden Maschinen:
 
-| Job | Lightsail (gedrosselt) | Hetzner cpx22 |
-|---|---|---|
-| `quality` | 11:52 | **4:07** |
-| `tests` (5300 Tests) | 33:32 | **8:19** |
-| `audit` | 3:02 | **0:36** |
-| gesamt | 48 min | **14:51** |
+| Job                  | Lightsail (gedrosselt) | Hetzner cpx22 |
+| -------------------- | ---------------------- | ------------- |
+| `quality`            | 11:52                  | **4:07**      |
+| `tests` (5300 Tests) | 33:32                  | **8:19**      |
+| `audit`              | 3:02                   | **0:36**      |
+| gesamt               | 48 min                 | **14:51**     |
 
 Die Timeouts in `rankscan/application` (15 / 25 / 10 Minuten) sind an diesen
 Zahlen ausgerichtet: reichlich Luft für eine wachsende Suite, aber eng genug,
@@ -206,11 +206,11 @@ und sah nach einem Composer-Problem aus.
 Stattdessen einen job-lokalen Symlink in `$RUNNER_TEMP` (je Job eigen):
 
 ```yaml
-      - name: PHP 8.4 in den PATH
-        run: |
-          mkdir -p "$RUNNER_TEMP/php-bin"
-          ln -sf /usr/bin/php8.4 "$RUNNER_TEMP/php-bin/php"
-          echo "$RUNNER_TEMP/php-bin" >> "$GITHUB_PATH"
+- name: PHP 8.4 in den PATH
+  run: |
+    mkdir -p "$RUNNER_TEMP/php-bin"
+    ln -sf /usr/bin/php8.4 "$RUNNER_TEMP/php-bin/php"
+    echo "$RUNNER_TEMP/php-bin" >> "$GITHUB_PATH"
 ```
 
 Die Versionen samt Extensions liegen auf der VM (`provision.sh`). Nebeneffekt:
@@ -233,16 +233,16 @@ Deshalb nur den Container-Port angeben und den zugelosten Host-Port über den
 `job`-Kontext holen:
 
 ```yaml
-    services:
-      postgres:
-        image: postgres:17
-        ports: [5432]          # kein 5432:5432
+services:
+  postgres:
+    image: postgres:17
+    ports: [5432] # kein 5432:5432
 
-    steps:
-      - name: Tests
-        env:
-          DB_PORT: ${{ job.services.postgres.ports['5432'] }}
-        run: vendor/bin/quality full --only test
+steps:
+  - name: Tests
+    env:
+      DB_PORT: ${{ job.services.postgres.ports['5432'] }}
+    run: vendor/bin/quality full --only test
 ```
 
 Der `job`-Kontext ist auf Job-Ebene **nicht** verfügbar — die Portvariable
@@ -274,10 +274,10 @@ einer NEUEN Version gezogen wird — am 19.08.2026 in allen drei Konsumenten
 gleichzeitig, beim Sprung auf `standout/quality` v0.2.0.
 
 ```yaml
-      - name: Abhängigkeiten (PHP)
-        env:
-          COMPOSER_AUTH: '{"github-oauth":{"github.com":"${{ secrets.GITHUB_TOKEN }}"}}'
-        run: composer install --no-interaction --prefer-dist --no-progress
+- name: Abhängigkeiten (PHP)
+  env:
+    COMPOSER_AUTH: '{"github-oauth":{"github.com":"${{ secrets.GITHUB_TOKEN }}"}}'
+  run: composer install --no-interaction --prefer-dist --no-progress
 ```
 
 `secrets.GITHUB_TOKEN` genuegt: das Limit steigt damit auf 1000 Anfragen pro

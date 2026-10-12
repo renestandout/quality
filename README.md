@@ -50,13 +50,13 @@ Eine `quality.yml` in der Repo-Wurzel beschreibt, woraus das Projekt besteht:
 
 ```yaml
 version: 1
-level: strict          # standard | strict — steuert die Regelschärfe
-baseline: true         # Bestandsfehler eingefroren, geprüft wird neuer Code
+level: strict # standard | strict — steuert die Regelschärfe
+baseline: true # Bestandsfehler eingefroren, geprüft wird neuer Code
 components:
   - path: ads-cockpit/backend
     stack: laravel
-    php: "8.3"
-    phpstan_level: 5   # steigt per Ratchet; NICHT vom Profil abgeleitet
+    php: '8.3'
+    phpstan_level: 5 # steigt per Ratchet; NICHT vom Profil abgeleitet
   - path: ads-cockpit/frontend
     stack: react-ts
 ```
@@ -69,7 +69,7 @@ der des Pakets.
 
 ```yaml
 configs:
-  prettier: own        # begründet eigener Formatierungsstil
+  prettier: own # begründet eigener Formatierungsstil
   # phpstan: own
   # tsconfig: own
   # ruff: own
@@ -97,14 +97,14 @@ Schärfe der Regeln, das Level den heute erreichten Stand.
 
 ## Stufen
 
-| Befehl | Prüft | Wann |
-|---|---|---|
-| `quality fix` | Formatierung + Linter auf geänderte Dateien | Editor-Hook nach jedem Edit |
-| `quality fast` | zusätzlich Typprüfung | Task-Abschluss, pre-commit (Ziel: < 30 s) |
-| `quality task` | alles ausser Build, inklusive Tests; ändert nichts am Code | vor dem Commit |
-| `quality full` | zusätzlich Build | CI |
-| `quality audit` | Bestandsaufnahme, ändert nichts | vor dem Onboarding, danach periodisch |
-| `quality prune` | schrumpft die PHPStan-Baseline | wenn PHPStan `ignore.unmatched` meldet |
+| Befehl          | Prüft                                                      | Wann                                      |
+| --------------- | ---------------------------------------------------------- | ----------------------------------------- |
+| `quality fix`   | Formatierung + Linter auf geänderte Dateien                | Editor-Hook nach jedem Edit               |
+| `quality fast`  | zusätzlich Typprüfung                                      | Task-Abschluss, pre-commit (Ziel: < 30 s) |
+| `quality task`  | alles ausser Build, inklusive Tests; ändert nichts am Code | vor dem Commit                            |
+| `quality full`  | zusätzlich Build                                           | CI                                        |
+| `quality audit` | Bestandsaufnahme, ändert nichts                            | vor dem Onboarding, danach periodisch     |
+| `quality prune` | schrumpft die PHPStan-Baseline                             | wenn PHPStan `ignore.unmatched` meldet    |
 
 `fix` und `fast` beschränken sich auf Dateien, die sich gegenüber `HEAD`
 unterscheiden; `--all` prüft alles, `--files a,b` gibt sie explizit vor.
@@ -305,7 +305,7 @@ Schutz unten deckt sie trotzdem ab.
 
 ## Tamper-Check
 
-`quality tamper` sucht im Diff nach Handgriffen, die ein Gate *umgehen* statt
+`quality tamper` sucht im Diff nach Handgriffen, die ein Gate _umgehen_ statt
 es zu erfüllen. Das ist der Teil, der speziell für agentische Entwicklung
 existiert: lokale Hooks lassen sich umgehen, dieser Check läuft in CI über den
 fertigen Diff.
@@ -406,7 +406,7 @@ Die Treffer verschwinden dadurch nicht aus der Ausgabe — sie blockieren nur
 nicht mehr.
 
 **Die Grenze ehrlich benannt:** Ein Agent kann diesen Trailer selbst setzen.
-Der Mechanismus macht Umgehung nicht unmöglich, sondern *unübersehbar* — sie
+Der Mechanismus macht Umgehung nicht unmöglich, sondern _unübersehbar_ — sie
 steht dann als Begründung in der Commit-Historie statt still im Code. Das ist
 der eigentliche Unterschied zu einem beiläufigen `@ts-ignore`. Die Regel, dass
 der Trailer Menschen vorbehalten ist, gehört ins Agent-Regelwerk.
@@ -421,11 +421,11 @@ Skill, der den Arbeitsablauf und die Grenzen beschreibt.
 /plugin install quality@standout
 ```
 
-| Hook | Wann | Was |
-|---|---|---|
-| PreToolUse | vor Edit/Write | verweigert Schreibzugriff auf Baselines, Gate- und Linter-Konfiguration, CI-Workflows; bei einer Baseline nennt die Ablehnung `quality prune` |
-| PostToolUse | nach jedem Edit | formatiert und lintet **die eine** geänderte Datei, meldet Fundstellen zurück |
-| Stop | vor Task-Abschluss | führt `quality fast --check` aus und blockiert, solange etwas rot ist |
+| Hook        | Wann               | Was                                                                                                                                           |
+| ----------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| PreToolUse  | vor Edit/Write     | verweigert Schreibzugriff auf Baselines, Gate- und Linter-Konfiguration, CI-Workflows; bei einer Baseline nennt die Ablehnung `quality prune` |
+| PostToolUse | nach jedem Edit    | formatiert und lintet **die eine** geänderte Datei, meldet Fundstellen zurück                                                                 |
+| Stop        | vor Task-Abschluss | führt `quality fast --check` aus und blockiert, solange etwas rot ist                                                                         |
 
 Drei Eigenschaften sind dabei wichtiger als die Hooks selbst:
 

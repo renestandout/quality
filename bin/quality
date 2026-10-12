@@ -111,11 +111,15 @@ async function runInitCommand(options) {
   } else {
     const { runAudit } = await import('../lib/audit-run.mjs')
     process.stderr.write(
-      c.dim('Kein --from angegeben: init misst selbst, damit die Konfiguration auf Zahlen beruht.\n')
+      c.dim(
+        'Kein --from angegeben: init misst selbst, damit die Konfiguration auf Zahlen beruht.\n',
+      ),
     )
     const report = await runAudit(root, { quiet: options.quiet, secrets: false })
     if (!report.recommendation) {
-      process.stderr.write(c.red('Keine Komponente erkannt — hier gibt es nichts zu konfigurieren.\n'))
+      process.stderr.write(
+        c.red('Keine Komponente erkannt — hier gibt es nichts zu konfigurieren.\n'),
+      )
       return 2
     }
     recommendation = report.recommendation
@@ -136,7 +140,11 @@ function changedFiles(root) {
     try {
       // stderr verschlucken: die Fälle, in denen git hier klagt, fangen wir
       // selbst ab — eine rohe git-Meldung hilft niemandem weiter.
-      return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      return execFileSync('git', args, {
+        cwd: root,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
         .split('\n')
         .filter(Boolean)
     } catch {
@@ -146,7 +154,10 @@ function changedFiles(root) {
   // Vor dem ersten Commit gibt es kein HEAD, gegen das sich vergleichen liesse.
   // Dann ist schlicht alles neu — das ist der Normalfall beim Onboarding.
   const files = hasCommit(root)
-    ? [...run(['diff', '--name-only', '--diff-filter=ACMR', 'HEAD']), ...run(['ls-files', '--others', '--exclude-standard'])]
+    ? [
+        ...run(['diff', '--name-only', '--diff-filter=ACMR', 'HEAD']),
+        ...run(['ls-files', '--others', '--exclude-standard']),
+      ]
     : run(['ls-files', '--cached', '--others', '--exclude-standard'])
   return [...new Set(files)].filter((f) => existsSync(join(root, f)))
 }
@@ -182,7 +193,7 @@ function branchFiles(root, base) {
     // wird, ist keine Zusage.
     throw new Error(
       `Kein gemeinsamer Stand zwischen "${base}" und HEAD — der Bereich ${base}...HEAD ist nicht bestimmbar.\n` +
-        '  In CI fehlt dafür meist die Vorgeschichte: actions/checkout braucht dann fetch-depth: 0.'
+        '  In CI fehlt dafür meist die Vorgeschichte: actions/checkout braucht dann fetch-depth: 0.',
     )
   }
   return [...new Set([...range, ...changedFiles(root)])].filter((f) => existsSync(join(root, f)))
@@ -190,7 +201,8 @@ function branchFiles(root, base) {
 
 async function loadStack(name) {
   const file = join(PKG_ROOT, 'stacks', `${name}.mjs`)
-  if (!existsSync(file)) throw new Error(`Kein Adapter für stack "${name}" gefunden (erwartet: ${file}).`)
+  if (!existsSync(file))
+    throw new Error(`Kein Adapter für stack "${name}" gefunden (erwartet: ${file}).`)
   return (await import(file)).default
 }
 
@@ -224,7 +236,9 @@ async function main() {
   const stage = STAGES[options.stage]
   if (!stage) {
     process.stderr.write(
-      c.red(`Unbekannt: "${options.stage}". Bekannt sind: ${[...Object.keys(STAGES), ...COMMANDS].join(', ')}.\n`)
+      c.red(
+        `Unbekannt: "${options.stage}". Bekannt sind: ${[...Object.keys(STAGES), ...COMMANDS].join(', ')}.\n`,
+      ),
     )
     return 2
   }
@@ -245,7 +259,9 @@ async function main() {
   const plan = planFor(stage, options.only)
   if (plan.verbs.length === 0 && !plan.tamper) {
     process.stderr.write(
-      c.red(`--only lässt von "quality ${options.stage}" nichts übrig (Stufe kennt: ${stage.verbs.join(', ')}${stage.tamper ? ', tamper' : ''}).\n`)
+      c.red(
+        `--only lässt von "quality ${options.stage}" nichts übrig (Stufe kennt: ${stage.verbs.join(', ')}${stage.tamper ? ', tamper' : ''}).\n`,
+      ),
     )
     return 2
   }
@@ -351,10 +367,14 @@ async function main() {
   let code = 0
   if (steps.length > 0) {
     const results = await runSteps(steps, { quiet: options.quiet, stopOnFail: false })
-    const label = options.only ? `quality ${options.stage} --only ${options.only.join(',')}` : `quality ${options.stage}`
+    const label = options.only
+      ? `quality ${options.stage} --only ${options.only.join(',')}`
+      : `quality ${options.stage}`
     code = summarize(results, { label: `${label} — ${config.level}` })
   } else if (plan.verbs.length > 0) {
-    process.stdout.write(c.dim('Keine geänderten Dateien in konfigurierten Komponenten — nichts zu prüfen.\n'))
+    process.stdout.write(
+      c.dim('Keine geänderten Dateien in konfigurierten Komponenten — nichts zu prüfen.\n'),
+    )
   }
 
   // Der Tamper-Check läuft auch dann, wenn oben schon etwas rot ist: sonst

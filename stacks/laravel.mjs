@@ -12,7 +12,7 @@ import { findBinary, missingToolHint } from '../lib/tools.mjs'
 
 function phpstanStep(ctx, tool) {
   const configFile = ['phpstan.neon', 'phpstan.neon.dist', 'phpstan.dist.neon'].find((f) =>
-    existsSync(join(ctx.dir, f))
+    existsSync(join(ctx.dir, f)),
   )
   if (!configFile) {
     return {
@@ -33,7 +33,12 @@ function phpstanStep(ctx, tool) {
   // Bei einem Datei-Lauf (Hook) nur die geänderten Dateien prüfen. PHPStan
   // analysiert dann zwar mit weniger Kontext, ist aber in Millisekunden fertig.
   if (ctx.files?.length) args.push(...ctx.files)
-  return { name: `phpstan level ${ctx.component.phpstanLevel} (${ctx.component.path})`, cmd: tool, args, cwd: ctx.dir }
+  return {
+    name: `phpstan level ${ctx.component.phpstanLevel} (${ctx.component.path})`,
+    cmd: tool,
+    args,
+    cwd: ctx.dir,
+  }
 }
 
 export default {
@@ -47,7 +52,12 @@ export default {
     if (ctx.check) args.push('--test')
     if (ctx.files?.length) args.push(...ctx.files)
     else if (!ctx.full) args.push('--dirty')
-    return { name: `pint${ctx.check ? ' (prüfend)' : ''} (${ctx.component.path})`, cmd: tool, args, cwd: ctx.dir }
+    return {
+      name: `pint${ctx.check ? ' (prüfend)' : ''} (${ctx.component.path})`,
+      cmd: tool,
+      args,
+      cwd: ctx.dir,
+    }
   },
 
   lint() {
@@ -66,7 +76,12 @@ export default {
       return { name: `tests (${ctx.component.path})`, cmd, args, cwd: ctx.dir }
     }
     if (existsSync(join(ctx.dir, 'artisan'))) {
-      return { name: `artisan test (${ctx.component.path})`, cmd: 'php', args: ['artisan', 'test'], cwd: ctx.dir }
+      return {
+        name: `artisan test (${ctx.component.path})`,
+        cmd: 'php',
+        args: ['artisan', 'test'],
+        cwd: ctx.dir,
+      }
     }
     const phpunit = findBinary('phpunit', { dir: ctx.dir, root: ctx.root, kind: 'php' })
     if (!phpunit) return { name: 'tests', skip: 'weder artisan noch phpunit gefunden' }

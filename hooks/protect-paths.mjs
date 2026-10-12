@@ -71,6 +71,6 @@ process.stdout.write(
       permissionDecision: 'deny',
       permissionDecisionReason: reason,
     },
-  })
+  }),
 )
 process.exit(0)

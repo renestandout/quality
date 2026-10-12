@@ -21,7 +21,15 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -75,7 +83,10 @@ function lage({ eigeneDateiUnformatiert = false } = {}) {
   git(['config', 'user.email', 'test@example.com'], dir)
   git(['config', 'user.name', 'Test'], dir)
 
-  schreibe('quality.yml', 'version: 1\nlevel: standard\nbaseline: false\ncomponents:\n  - { path: ".", stack: react-ts }\n')
+  schreibe(
+    'quality.yml',
+    'version: 1\nlevel: standard\nbaseline: false\ncomponents:\n  - { path: ".", stack: react-ts }\n',
+  )
   schreibe('.gitignore', 'node_modules/\n')
   schreibe('legacy.ts', 'export const legacy = 1 // UNFORMATTED\n')
   schreibe('mine.ts', 'export const mine = 1\n')

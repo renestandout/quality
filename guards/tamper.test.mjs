@@ -5,7 +5,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { isNullRef, runTamper } from './tamper-git.mjs'
-import { PROTECTED_PATHS, SOFT_LOCALLY, SOURCE_FILE, analyseDiff, findException, isTestFile, parseDiff } from './tamper.mjs'
+import {
+  PROTECTED_PATHS,
+  SOFT_LOCALLY,
+  SOURCE_FILE,
+  analyseDiff,
+  findException,
+  isTestFile,
+  parseDiff,
+} from './tamper.mjs'
 
 /** Ein echtes Repository mit genau einem Commit — dem Stand nach dem ersten Push. */
 function gitFixture(content) {
@@ -199,7 +207,7 @@ diff --git a/.github/workflows/quality.yml b/.github/workflows/quality.yml
 +# geändert
 `)
   assert.deepEqual(rules(findings), ['protected.changed'])
-  assert.equal(findings[0].label, "CI-Workflow geändert")
+  assert.equal(findings[0].label, 'CI-Workflow geändert')
 })
 
 test('quality.yml zählt nur in der Repo-Wurzel', () => {
@@ -211,7 +219,7 @@ diff --git a/quality.yml b/quality.yml
  version: 1
 +level: standard
 `)
-  assert.equal(wurzel[0].label, "Quality-Konfiguration geändert")
+  assert.equal(wurzel[0].label, 'Quality-Konfiguration geändert')
 
   // Eine gleichnamige Datei tief im Baum ist Projektinhalt, keine Gate-Konfiguration.
   const tiefer = check(`
@@ -262,12 +270,22 @@ diff --git a/src/a.test.ts b/src/a.test.ts
 +test.skip('a', () => {})
 +test.only('b', () => {})
 `)
-  assert.deepEqual(rules(findings).sort(), ['suppression.typescript', 'test.focused', 'test.skipped'])
+  assert.deepEqual(rules(findings).sort(), [
+    'suppression.typescript',
+    'test.focused',
+    'test.skipped',
+  ])
 })
 
 test('findException erkennt den Trailer', () => {
-  assert.equal(findException(['feat: x\n\nQuality-Exception: Test hängt an externer API']), 'Test hängt an externer API')
-  assert.equal(findException(['feat: x\n\nquality-exception: kleingeschrieben']), 'kleingeschrieben')
+  assert.equal(
+    findException(['feat: x\n\nQuality-Exception: Test hängt an externer API']),
+    'Test hängt an externer API',
+  )
+  assert.equal(
+    findException(['feat: x\n\nquality-exception: kleingeschrieben']),
+    'kleingeschrieben',
+  )
   assert.equal(findException(['feat: ohne Trailer']), null)
   // Ein Trailer ohne Begründung zählt nicht.
   assert.equal(findException(['feat: x\n\nQuality-Exception:']), null)
@@ -343,7 +361,11 @@ test('Fremdcode wird nie bewertet, auch wenn er mitcommittet ist', () => {
       added: [{ line: 1, text: '// @phpstan-ignore-next-line' }],
       deleted: false,
     },
-    { path: 'node_modules/foo/index.js', added: [{ line: 1, text: '// eslint-disable' }], deleted: false },
+    {
+      path: 'node_modules/foo/index.js',
+      added: [{ line: 1, text: '// eslint-disable' }],
+      deleted: false,
+    },
     { path: 'tests/vendor/MeinTest.php', deleted: true, added: [] },
   ])
   assert.deepEqual(findings, [])
@@ -367,11 +389,13 @@ test('Linter-Konfiguration ist auch als .mjs/.cjs geschützt', () => {
     'prettier.config.cjs',
     'prettier.config.mts',
   ]) {
-    const findings = analyseDiff([{ path: datei, added: [{ line: 1, text: '// gelockert' }], deleted: false }])
+    const findings = analyseDiff([
+      { path: datei, added: [{ line: 1, text: '// gelockert' }], deleted: false },
+    ])
     assert.deepEqual(
       findings.map((f) => f.rule),
       ['protected.changed'],
-      `${datei} müsste geschützt sein, ist es aber nicht`
+      `${datei} müsste geschützt sein, ist es aber nicht`,
     )
   }
 })
@@ -379,8 +403,14 @@ test('Linter-Konfiguration ist auch als .mjs/.cjs geschützt', () => {
 test('eine gleichnamige Quelldatei ist keine Konfiguration', () => {
   // Die Erweiterung um [cm]? darf nicht dazu führen, dass alles mit ähnlichem
   // Namen als Konfiguration gilt.
-  for (const datei of ['src/eslint.config.helper.mjs', 'eslint.configuration.mjs', 'my-eslint.config.mjsx']) {
-    const findings = analyseDiff([{ path: datei, added: [{ line: 1, text: 'const a = 1' }], deleted: false }])
+  for (const datei of [
+    'src/eslint.config.helper.mjs',
+    'eslint.configuration.mjs',
+    'my-eslint.config.mjsx',
+  ]) {
+    const findings = analyseDiff([
+      { path: datei, added: [{ line: 1, text: 'const a = 1' }], deleted: false },
+    ])
     assert.deepEqual(findings, [], `${datei} darf nicht als geschützte Konfiguration gelten`)
   }
 })
@@ -401,7 +431,7 @@ test('ein Bot darf Action-Versionen im Workflow anheben', () => {
   assert.deepEqual(
     analyseDiff(diff, { botAuthor: false }).map((f) => f.rule),
     ['protected.changed'],
-    'derselbe Diff von Hand müsste weiterhin melden'
+    'derselbe Diff von Hand müsste weiterhin melden',
   )
 })
 
@@ -411,12 +441,19 @@ test('die Bot-Ausnahme gilt nicht für Suppressions und stillgelegte Tests', () 
   const findings = analyseDiff(
     [
       { path: 'src/A.ts', added: [{ line: 3, text: '// @ts-ignore' }], deleted: false },
-      { path: 'tests/AT.php', added: [{ line: 9, text: '$this->markTestSkipped();' }], deleted: false },
+      {
+        path: 'tests/AT.php',
+        added: [{ line: 9, text: '$this->markTestSkipped();' }],
+        deleted: false,
+      },
       { path: 'tests/Weg.php', deleted: true, added: [] },
     ],
-    { botAuthor: true }
+    { botAuthor: true },
   )
-  assert.deepEqual(findings.map((f) => f.rule).sort(), ['suppression.typescript', 'test.deleted', 'test.skipped'].sort())
+  assert.deepEqual(
+    findings.map((f) => f.rule).sort(),
+    ['suppression.typescript', 'test.deleted', 'test.skipped'].sort(),
+  )
 })
 
 test('hinzugefügte Ignore-Zeile in .prettierignore wird gemeldet', () => {
@@ -495,7 +532,7 @@ diff --git a/tests/a.test.mjs b/tests/a.test.mjs
 `)
   assert.deepEqual(
     files[0].removed.map((r) => r.text),
-    ['assert.equal(x, 1)']
+    ['assert.equal(x, 1)'],
   )
 })
 
@@ -730,7 +767,7 @@ regexes = [
   }
   assert.ok(
     findings.some((f) => f.detail.includes('STORAGE_KEY')),
-    'die weggedrückte Fundstelle müsste im Bericht stehen'
+    'die weggedrückte Fundstelle müsste im Bericht stehen',
   )
 })
 
@@ -756,8 +793,14 @@ diff --git a/.gitleaks.toml b/.gitleaks.toml
 test('die gitleaks-Baseline dagegen ist ein geschützter Pfad', () => {
   // Sie hält fest, welche Funde als bekannt gelten — dieselbe Rolle wie
   // phpstan-baseline.neon.
-  for (const datei of ['gitleaks-baseline.json', '.gitleaks-baseline.json', 'ci/gitleaks.baseline.json']) {
-    const findings = analyseDiff([{ path: datei, added: [{ line: 1, text: '[]' }], deleted: false }])
+  for (const datei of [
+    'gitleaks-baseline.json',
+    '.gitleaks-baseline.json',
+    'ci/gitleaks.baseline.json',
+  ]) {
+    const findings = analyseDiff([
+      { path: datei, added: [{ line: 1, text: '[]' }], deleted: false },
+    ])
     assert.deepEqual(rules(findings), ['protected.changed'], `${datei} müsste geschützt sein`)
     assert.equal(findings[0].label, 'gitleaks-Baseline geändert')
   }
@@ -819,12 +862,15 @@ test('eine Null-SHA-Basis überspringt den Lauf, statt an git zu scheitern', () 
 test('eine unauffindbare Basis bleibt ein Fehler und nennt beide Ursachen', () => {
   const root = gitFixture('const a = 1\n')
   try {
-    assert.throws(() => runTamper({ root, base: 'origin/main', quiet: true }), (err) => {
-      assert.match(err.message, /nicht auffindbar/)
-      assert.match(err.message, /fetch-depth: 0/)
-      assert.match(err.message, /Force-Push/)
-      return true
-    })
+    assert.throws(
+      () => runTamper({ root, base: 'origin/main', quiet: true }),
+      (err) => {
+        assert.match(err.message, /nicht auffindbar/)
+        assert.match(err.message, /fetch-depth: 0/)
+        assert.match(err.message, /Force-Push/)
+        return true
+      },
+    )
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -943,7 +989,12 @@ test('Quell- und Testmuster decken alle gepruegten Sprachen ab', () => {
   }
   assert.ok(!SOURCE_FILE.test('composer.lock'))
 
-  for (const path of ['tests/Feature/LoginTest.php', 'src/app.test.ts', 'tools/analyse/tests/test_cli.py', 'core/regeln_test.py']) {
+  for (const path of [
+    'tests/Feature/LoginTest.php',
+    'src/app.test.ts',
+    'tools/analyse/tests/test_cli.py',
+    'core/regeln_test.py',
+  ]) {
     assert.ok(isTestFile(path), `${path} sollte als Testdatei gelten`)
   }
   assert.ok(!isTestFile('tools/analyse/cli.py'))
@@ -1066,7 +1117,12 @@ diff --git a/eslint-suppressions.json b/eslint-suppressions.json
 test('die übrigen geschützten Pfade kennen keine Richtung', () => {
   // Ein CI-Workflow oder eine Linter-Konfiguration hat keine erwünschte
   // Richtung: eine entfernte Zeile kann dort eine Prüfung abschalten.
-  for (const datei of ['.github/workflows/quality.yml', 'quality.yml', 'phpstan.neon', 'pint.json']) {
+  for (const datei of [
+    '.github/workflows/quality.yml',
+    'quality.yml',
+    'phpstan.neon',
+    'pint.json',
+  ]) {
     const findings = analyseDiff([
       { path: datei, deleted: false, added: [], removed: [{ text: '      - run: quality full' }] },
     ])
@@ -1096,7 +1152,13 @@ function baselineFixture(before, after) {
 }
 
 const neonEntry = (message, count = 1) =>
-  ['\t\t-', `\t\t\tmessage: '${message}'`, '\t\t\tidentifier: property.notFound', `\t\t\tcount: ${count}`, '\t\t\tpath: app/A.php'].join('\n')
+  [
+    '\t\t-',
+    `\t\t\tmessage: '${message}'`,
+    '\t\t\tidentifier: property.notFound',
+    `\t\t\tcount: ${count}`,
+    '\t\t\tpath: app/A.php',
+  ].join('\n')
 
 const neonBaseline = (...entries) => 'parameters:\n\tignoreErrors:\n' + entries.join('\n\n') + '\n'
 
@@ -1105,7 +1167,7 @@ test('echter Diff: eine HINZUGEFÜGTE Baseline-Zeile meldet in CI weiterhin', ()
   // von Hand geschriebenen Diff — sonst prüft sie den Parser statt die Regel.
   const root = baselineFixture(
     neonBaseline(neonEntry('#^A\\.$#')),
-    neonBaseline(neonEntry('#^A\\.$#'), neonEntry('#^Neu\\.$#'))
+    neonBaseline(neonEntry('#^A\\.$#'), neonEntry('#^Neu\\.$#')),
   )
   try {
     assert.equal(runTamper({ root, base: 'HEAD~1', quiet: true }), 1)
@@ -1117,7 +1179,7 @@ test('echter Diff: eine HINZUGEFÜGTE Baseline-Zeile meldet in CI weiterhin', ()
 test('echter Diff: eine ENTFERNTE Baseline-Zeile meldet in CI nicht mehr', () => {
   const root = baselineFixture(
     neonBaseline(neonEntry('#^A\\.$#'), neonEntry('#^Tot\\.$#')),
-    neonBaseline(neonEntry('#^A\\.$#'))
+    neonBaseline(neonEntry('#^A\\.$#')),
   )
   try {
     assert.equal(runTamper({ root, base: 'HEAD~1', quiet: true }), 0)
@@ -1127,7 +1189,10 @@ test('echter Diff: eine ENTFERNTE Baseline-Zeile meldet in CI nicht mehr', () =>
 })
 
 test('echter Diff: ein angehobener Zähler meldet in CI weiterhin', () => {
-  const root = baselineFixture(neonBaseline(neonEntry('#^A\\.$#', 1)), neonBaseline(neonEntry('#^A\\.$#', 9)))
+  const root = baselineFixture(
+    neonBaseline(neonEntry('#^A\\.$#', 1)),
+    neonBaseline(neonEntry('#^A\\.$#', 9)),
+  )
   try {
     assert.equal(runTamper({ root, base: 'HEAD~1', quiet: true }), 1)
   } finally {
@@ -1136,7 +1201,10 @@ test('echter Diff: ein angehobener Zähler meldet in CI weiterhin', () => {
 })
 
 test('echter Diff: ein gesenkter Zähler meldet in CI nicht mehr', () => {
-  const root = baselineFixture(neonBaseline(neonEntry('#^A\\.$#', 9)), neonBaseline(neonEntry('#^A\\.$#', 1)))
+  const root = baselineFixture(
+    neonBaseline(neonEntry('#^A\\.$#', 9)),
+    neonBaseline(neonEntry('#^A\\.$#', 1)),
+  )
   try {
     assert.equal(runTamper({ root, base: 'HEAD~1', quiet: true }), 0)
   } finally {

@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0            # der Tamper-Check braucht die Vorgeschichte
+          fetch-depth: 0 # der Tamper-Check braucht die Vorgeschichte
 
       - uses: pnpm/action-setup@v4
 
@@ -74,7 +74,7 @@ jobs:
       - name: Secret Scanning
         if: always()
         env:
-          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_VERSION: '8.30.1'
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"

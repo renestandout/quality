@@ -65,7 +65,11 @@ function clearAttempts(file) {
 
 function gitIn(root, args) {
   try {
-    return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    return execFileSync('git', args, {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
   } catch {
     return null
   }
@@ -116,12 +120,15 @@ if (attempts >= MAX_ATTEMPTS) {
 // Ohne --quiet, damit die Meldungen der Werkzeuge beim Agenten ankommen und
 // nicht nur die Aussage, dass etwas rot ist. Mit --check, weil ein Stop-Hook
 // prüft und nicht still Dateien umschreibt.
-const { code, output, timedOut } = runQuality(['fast', '--check'], { cwd: root, timeoutMs: TIMEOUT_MS })
+const { code, output, timedOut } = runQuality(['fast', '--check'], {
+  cwd: root,
+  timeoutMs: TIMEOUT_MS,
+})
 
 if (timedOut) {
   process.stderr.write(
     'Die Qualitätsprüfung lief in die Zeitgrenze und wurde übersprungen. ' +
-      'Erwähne das gegenüber dem Menschen — der Stand ist ungeprüft.\n'
+      'Erwähne das gegenüber dem Menschen — der Stand ist ungeprüft.\n',
   )
   clearAttempts(file)
   process.exit(0)
@@ -140,7 +147,7 @@ if (next >= MAX_ATTEMPTS) {
     `Die Qualitätsprüfung ist nach ${MAX_ATTEMPTS} Versuchen weiterhin rot:\n\n${output.trim()}\n\n` +
       `Hör hier auf zu reparieren. Berichte dem Menschen, was rot bleibt und was du ` +
       `versucht hast, und frage nach dem weiteren Vorgehen. Schalte die Prüfung nicht ab ` +
-      `und arbeite nicht mit Suppressions.\n`
+      `und arbeite nicht mit Suppressions.\n`,
   )
   process.exit(2)
 }
@@ -148,6 +155,6 @@ if (next >= MAX_ATTEMPTS) {
 process.stderr.write(
   `Die Qualitätsprüfung ist rot (Versuch ${next} von ${MAX_ATTEMPTS}):\n\n${output.trim()}\n\n` +
     `Behebe die Ursache und schliesse den Task danach erneut ab. ` +
-    `Eine Formatierung behebt \`quality fix\`.\n`
+    `Eine Formatierung behebt \`quality fix\`.\n`,
 )
 process.exit(2)

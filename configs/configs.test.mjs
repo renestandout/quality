@@ -16,7 +16,11 @@ test('Die Basiskonfiguration legt keine Dateien im Projekt an', () => {
     .split('\n')
     .filter((line) => !line.trim().startsWith('#'))
     .join('\n')
-  assert.doesNotMatch(wirksam, /tmpDir/, 'base.neon setzt tmpDir und legt damit ein Verzeichnis im Projekt an')
+  assert.doesNotMatch(
+    wirksam,
+    /tmpDir/,
+    'base.neon setzt tmpDir und legt damit ein Verzeichnis im Projekt an',
+  )
   assert.doesNotMatch(wirksam, /%currentWorkingDirectory%/)
 })
 
@@ -29,8 +33,9 @@ test('Alle Manifeste nennen dieselbe Version', () => {
   const pkg = version('package.json')
   assert.equal(version('.claude-plugin', 'plugin.json'), pkg)
   assert.equal(
-    JSON.parse(readFileSync(join(PKG_ROOT, '.claude-plugin', 'marketplace.json'), 'utf8')).plugins[0].version,
-    pkg
+    JSON.parse(readFileSync(join(PKG_ROOT, '.claude-plugin', 'marketplace.json'), 'utf8'))
+      .plugins[0].version,
+    pkg,
   )
 })
 

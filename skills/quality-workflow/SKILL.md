@@ -114,10 +114,10 @@ Vielfaches, weil niemand mehr weiss, dass er da ist.
 
 ## Befehle
 
-| Befehl | Wann |
-|---|---|
-| `quality fix` | läuft automatisch nach jedem Edit |
-| `quality fast` | vor Task-Abschluss (läuft automatisch) |
-| `quality task --base main` | vor dem Commit, inklusive Tests; `--base` im Worktree |
-| `quality tamper` | zeigt, was am aktuellen Stand ein Gate umgehen würde |
-| `quality prune` | entfernt tote Einträge aus der PHPStan-Baseline (`--dry-run` zeigt nur) |
+| Befehl                     | Wann                                                                    |
+| -------------------------- | ----------------------------------------------------------------------- |
+| `quality fix`              | läuft automatisch nach jedem Edit                                       |
+| `quality fast`             | vor Task-Abschluss (läuft automatisch)                                  |
+| `quality task --base main` | vor dem Commit, inklusive Tests; `--base` im Worktree                   |
+| `quality tamper`           | zeigt, was am aktuellen Stand ein Gate umgehen würde                    |
+| `quality prune`            | entfernt tote Einträge aus der PHPStan-Baseline (`--dry-run` zeigt nur) |

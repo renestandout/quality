@@ -104,7 +104,10 @@ export default {
         return {
           name: `${tool} (${ctx.component.path})`,
           cmd: bin,
-          args: [...(strict ? [LINT_STRICT_FLAG[tool]] : []), ...(wantsFiles ? ctx.files : fallbackArgs)],
+          args: [
+            ...(strict ? [LINT_STRICT_FLAG[tool]] : []),
+            ...(wantsFiles ? ctx.files : fallbackArgs),
+          ],
           cwd: ctx.dir,
         }
       }

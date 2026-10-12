@@ -2,14 +2,22 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { c } from '../lib/run.mjs'
-import { EXCEPTION_TRAILER, SOFT_LOCALLY, analyseDiff, findException, parseDiff } from './tamper.mjs'
+import {
+  EXCEPTION_TRAILER,
+  SOFT_LOCALLY,
+  analyseDiff,
+  findException,
+  parseDiff,
+} from './tamper.mjs'
 
 function git(args, cwd) {
   try {
     return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
   } catch (err) {
     // Ein leerer Diff liefert Status 0; alles andere ist ein echtes Problem.
-    throw new Error(`git ${args.join(' ')} fehlgeschlagen: ${err.stderr?.toString().trim() || err.message}`)
+    throw new Error(
+      `git ${args.join(' ')} fehlgeschlagen: ${err.stderr?.toString().trim() || err.message}`,
+    )
   }
 }
 
@@ -21,7 +29,10 @@ function git(args, cwd) {
  */
 export function assertRevisionExists(ref, root) {
   try {
-    execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: root, stdio: 'ignore' })
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], {
+      cwd: root,
+      stdio: 'ignore',
+    })
   } catch {
     throw new Error(
       `Basis-Referenz "${ref}" ist im Repository nicht auffindbar.\n` +
@@ -30,7 +41,7 @@ export function assertRevisionExists(ref, root) {
         `  Beim Push auf den Standardbranch ist die Basis der Stand davor\n` +
         `  (github.event.before). Nach einem Force-Push gibt es den nicht mehr:\n` +
         `  die Historie ist umgeschrieben, der alte Stand nicht mehr erreichbar.\n` +
-        `  Lokal ist die Basis üblicherweise "origin/main".`
+        `  Lokal ist die Basis üblicherweise "origin/main".`,
     )
   }
 }
@@ -52,7 +63,10 @@ export function isNullRef(ref) {
  */
 export function hasCommit(root) {
   try {
-    execFileSync('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], { cwd: root, stdio: 'ignore' })
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], {
+      cwd: root,
+      stdio: 'ignore',
+    })
     return true
   } catch {
     return false
@@ -97,7 +111,9 @@ function isBotAuthor(root, base) {
   if (actor.endsWith('[bot]') || actor === 'renovate' || actor === 'dependabot') return true
   if (!base) return false
   try {
-    const authors = git(['log', `${base}..HEAD`, '--format=%an <%ae>'], root).split('\n').filter(Boolean)
+    const authors = git(['log', `${base}..HEAD`, '--format=%an <%ae>'], root)
+      .split('\n')
+      .filter(Boolean)
     return authors.length > 0 && authors.every((a) => /\[bot\]|renovate|dependabot/i.test(a))
   } catch {
     return false
@@ -118,7 +134,7 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
   if (isNullRef(base)) {
     if (!quiet) {
       process.stdout.write(
-        c.dim('Tamper-Check übersprungen: kein Stand vor diesem Push (Null-SHA als Basis).\n')
+        c.dim('Tamper-Check übersprungen: kein Stand vor diesem Push (Null-SHA als Basis).\n'),
       )
     }
     return 0
@@ -163,8 +179,8 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
       process.stdout.write(
         c.dim(
           `Tamper-Check: ${informational.length} Hinweis(e) ohne Blockade — ` +
-            `${informational.map((f) => f.path).join(', ')}. In CI zählen sie.\n`
-        )
+            `${informational.map((f) => f.path).join(', ')}. In CI zählen sie.\n`,
+        ),
       )
     } else if (!quiet) {
       process.stdout.write(c.green('✓ Tamper-Check: keine Umgehungsmuster im Diff.\n'))
@@ -193,18 +209,19 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
   }
 
   if (exception) {
-    write(
-      c.yellow(`\n${findings.length} Treffer, durchgewinkt per Ausnahme: „${exception}"\n`)
-    )
+    write(c.yellow(`\n${findings.length} Treffer, durchgewinkt per Ausnahme: „${exception}"\n`))
     return 0
   }
 
-  write(c.red(`\n${findings.length} Treffer.`) + ' Diese Änderungen verschieben das Gate, statt es zu erfüllen.\n')
+  write(
+    c.red(`\n${findings.length} Treffer.`) +
+      ' Diese Änderungen verschieben das Gate, statt es zu erfüllen.\n',
+  )
   write(
     c.dim(
       `\nWenn das hier beabsichtigt ist, gehört die Begründung in den Commit:\n` +
-        `    ${EXCEPTION_TRAILER} <warum das nötig ist>\n`
-    )
+        `    ${EXCEPTION_TRAILER} <warum das nötig ist>\n`,
+    ),
   )
   return 1
 }

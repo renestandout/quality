@@ -41,6 +41,6 @@ process.stderr.write(
   `Qualitätsprüfung von ${relativePath} meldet Folgendes:\n\n${output.trim()}\n\n` +
     `Behebe, was zu deiner Änderung gehört. Bestand eine Meldung schon vorher, ` +
     `lass sie stehen und erwähne sie — repariere sie nicht nebenbei mit.\n` +
-    `Suppressions sind keine Lösung.\n`
+    `Suppressions sind keine Lösung.\n`,
 )
 process.exit(2)
