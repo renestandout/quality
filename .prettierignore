@@ -1,4 +1,0 @@
-# Das Board legt WORKER.md in jedem Worktree an und schliesst die Datei über
-# .git/info/exclude aus. prettier liest diese Datei nicht und prüfte sonst
-# einen Auftrag, der nie ins Repo gelangt.
-WORKER.md

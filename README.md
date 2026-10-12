@@ -19,14 +19,14 @@ composer require --dev larastan/larastan laravel/pint   # Werkzeuge des laravel-
 JS/TS-Projekt:
 
 ```bash
-npm  install -D github:renestandout/quality#v0.2.9 prettier
-pnpm add     -D github:renestandout/quality#v0.2.9 prettier
+npm  install -D github:renestandout/quality#v0.2.10 prettier
+pnpm add     -D github:renestandout/quality#v0.2.10 prettier
 ```
 
 Python-Projekt — über npm, mit einer `package.json`, die nur dafür da ist:
 
 ```bash
-npm install -D github:renestandout/quality#v0.2.9
+npm install -D github:renestandout/quality#v0.2.10
 pip  install ruff mypy pytest pip-audit
 ```
 
@@ -503,6 +503,12 @@ Den **Formatierungsstil**: `configs/prettier.config.js` ist ein Startwert für
 neue Projekte. Bestehende Projekte passen ihn an ihren Stil an, bevor sie
 einmalig durchformatieren. Konsistenz innerhalb eines Projekts zählt;
 projektübergreifend zählt sie nicht genug, um dafür halbe Codebasen anzufassen.
+
+**`.git/info/exclude`** gilt auch für prettier. prettier liest selbst nur
+`.gitignore` und `.prettierignore`. Das Gate fragt git nach den ungetrackten
+Dateien, die `info/exclude` ausschliesst, und nimmt sie aus der Prüfung. So
+braucht die `WORKER.md` des Boards in keinem Projekt eine Zeile in
+`.prettierignore`.
 
 ## Entwicklung
 
