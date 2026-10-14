@@ -19,6 +19,12 @@ import {
 
 /** @import { Finding } from './tamper.mjs' */
 
+// runTamper liest GITHUB_ACTOR. In einem Dependabot-PR auf dieses Repository
+// ist der Wert ein Bot, und jeder Test, der einen Fund erwartet, würde rot.
+// node --test startet jede Testdatei in einem eigenen Prozess; das Löschen
+// wirkt deshalb nur hier.
+delete process.env.GITHUB_ACTOR
+
 /**
  * Ein echtes Repository mit genau einem Commit — dem Stand nach dem ersten Push.
  *
@@ -466,6 +472,31 @@ test('die Bot-Ausnahme gilt nicht für Suppressions und stillgelegte Tests', () 
   assert.deepEqual(
     findings.map((f) => f.rule).sort(),
     ['suppression.typescript', 'test.deleted', 'test.skipped'].sort(),
+  )
+})
+
+test('die Bot-Ausnahme gilt nicht für Baselines und Gate-Konfiguration', () => {
+  // Ein Bot hebt Versionen an. Eine wachsende Baseline oder eine geänderte
+  // Gate-Konfiguration ist kein Versionsbump, auch wenn der Commit vom Bot kommt.
+  const findings = analyseDiff(
+    [
+      {
+        path: 'phpstan-baseline.neon',
+        added: [{ line: 4, text: "\t\t\tmessage: '#^Neu#'" }],
+        deleted: false,
+      },
+      { path: 'quality.yml', added: [{ line: 2, text: 'stack: none' }], deleted: false },
+      { path: '.claude/settings.json', added: [{ line: 1, text: '{}' }], deleted: false },
+    ],
+    { botAuthor: true },
+  )
+  assert.deepEqual(
+    findings.map((f) => `${f.rule} ${f.path}`),
+    [
+      'protected.changed phpstan-baseline.neon',
+      'protected.changed quality.yml',
+      'protected.changed .claude/settings.json',
+    ],
   )
 })
 

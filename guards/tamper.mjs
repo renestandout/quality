@@ -127,7 +127,8 @@ export const SOURCE_FILE = /\.(php|[jt]sx?|mjs|cjs|vue|py)$/i
 export const PROTECTED_PATHS = [
   // Der CI-Workflow steht zuerst: eine Datei wie .github/workflows/quality.yml
   // ist ein Workflow und keine Quality-Konfiguration, auch wenn sie so heisst.
-  { pattern: /^\.github\/workflows\//, label: 'CI-Workflow' },
+  // `botMayChange`: Dependabot hebt hier Action-Versionen an. Siehe `analyseDiff`.
+  { pattern: /^\.github\/workflows\//, label: 'CI-Workflow', botMayChange: true },
   // `shrinkOnly` markiert die Baselines: nur bei ihnen hat eine Änderung eine
   // erwünschte Richtung. Siehe `baselineOnlyShrinks`.
   { pattern: /(^|\/)phpstan-baseline\.neon$/, label: 'PHPStan-Baseline', shrinkOnly: true },
@@ -614,9 +615,11 @@ export function baselineOnlyShrinks(file) {
  *
  * `botAuthor` unterdrückt zwei Regeln: die Lockfile-Regel — ein Renovate-Lauf
  * ändert Lockfiles per Definition und würde sonst jedes Mal rot — und seit
- * v0.1.8 auch `protected.changed`.
+ * v0.1.8 `protected.changed`, aber nur für die CI-Workflows (`botMayChange`).
+ * Baselines und Gate-Konfiguration meldet die Regel auch bei einem Bot. Ein Bot
+ * hebt Versionen an; eine wachsende Baseline ist kein Versionsbump.
  *
- * Letzteres, weil Dependabot Action-Versionen in `.github/workflows/**`
+ * Die Workflows, weil Dependabot Action-Versionen in `.github/workflows/**`
  * anhebt, und das ist ein geschützter Pfad. Ohne die Ausnahme ist JEDER
  * Actions-PR rot, auch ein reiner Patch-Bump: Dauerröte auf einem Gate, das
  * genau davon lebt, dass Rot etwas bedeutet.
@@ -656,8 +659,9 @@ export function analyseDiff(files, { botAuthor = false, ignorePaths = [] } = {})
       continue
     }
 
-    for (const { pattern, label, shrinkOnly } of botAuthor ? [] : PROTECTED_PATHS) {
+    for (const { pattern, label, shrinkOnly, botMayChange } of PROTECTED_PATHS) {
       if (pattern.test(file.path)) {
+        if (botAuthor && botMayChange) break
         // Nur Baselines haben eine erwünschte Richtung. Schrumpft die Datei,
         // ist das kein Verschieben des Gates, sondern das Gegenteil.
         if (shrinkOnly && baselineOnlyShrinks(file)) break
