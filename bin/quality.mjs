@@ -46,6 +46,13 @@ Baseline pflegen
                  schrumpfen — und ist damit der Weg, den ein Agent nehmen darf,
                  wo ein Edit an der Datei gesperrt ist.
 
+Vor dem Deploy
+  ${c.bold('quality deploy-check')} [<ref>]
+                 prüft, ob auf dem Commit (Standard: HEAD) alle Pflicht-Checks
+                 der Branch Protection grün sind. Exit 0 grün, 1 blockiert,
+                 2 keine Aussage möglich. Braucht gh mit Login.
+                 ${c.dim('Notfall: QUALITY_DEPLOY_OVERRIDE="<Begründung>" lässt durch, laut.')}
+
 Optionen
   --files <a,b>   Dateien explizit angeben statt aus git zu ermitteln
   --only <a,b>    nur diese Schritte der Stufe ausführen, Rest weglassen
@@ -69,6 +76,7 @@ Optionen
           --dry-run        nur zeigen, was geschrieben würde
           --force          bestehende Dateien überschreiben
   ${c.dim('prune:')} --dry-run        nur zeigen, was entfernt würde
+  ${c.dim('deploy-check:')} --wait <s>  auf laufende Checks warten, höchstens <s> Sekunden
 `
 }
 
@@ -111,6 +119,17 @@ async function runAuditCommand(options) {
 async function runPruneCommand(/** @type {Options} */ options) {
   const { runPrune } = await import('../lib/baseline-run.mjs')
   return runPrune(loadConfig(), { dryRun: options.dryRun, quiet: options.quiet })
+}
+
+/**
+ * `quality deploy-check` — braucht keine quality.yml: Was grün sein muss,
+ * sagt die Branch Protection, nicht die Konfiguration.
+ *
+ * @param {Options} options
+ */
+async function runDeployCheckCommand(options) {
+  const { runDeployCheck } = await import('../lib/deploy-check.mjs')
+  return runDeployCheck({ root: repoRoot(), ref: options.ref, waitSeconds: options.wait })
 }
 
 /** @param {Options} options */
@@ -249,10 +268,12 @@ async function main() {
 
   // audit und init laufen ohne quality.yml — sie sind ja dafür da, sie zu erzeugen.
   // prune braucht sie, ist aber ebenso keine Prüfstufe: es ändert eine Datei.
+  // deploy-check fragt GitHub, nicht die Werkzeuge des Projekts.
   if (COMMANDS.includes(options.stage)) {
     try {
       if (options.stage === 'audit') return await runAuditCommand(options)
       if (options.stage === 'prune') return await runPruneCommand(options)
+      if (options.stage === 'deploy-check') return await runDeployCheckCommand(options)
       return await runInitCommand(options)
     } catch (err) {
       process.stderr.write(c.red(`${messageOf(err)}\n`))

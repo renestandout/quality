@@ -489,6 +489,46 @@ die Grenzen (nur private Repos, Ausfall heisst hängend statt rot) stehen in
 [`docs/self-hosted-runner.md`](docs/self-hosted-runner.md); die Skripte liegen
 unter [`runner/`](runner/).
 
+## Vor dem Deploy: `quality deploy-check`
+
+Das CI-Gate allein hält kein Deploy auf. `cc --abschliessen` pusht direkt auf
+`main`, der CI-Lauf startet erst danach. Ein Deploy-Skript, das nicht nachfragt,
+liefert deshalb auch einen roten oder noch laufenden Stand aus. So lief es bis
+zum 14.10.2026 in adboard, resplan, calcup und rankscan.
+
+`quality deploy-check` fragt GitHub, ob auf dem Commit alle Pflicht-Checks grün
+sind:
+
+```bash
+quality deploy-check              # HEAD
+quality deploy-check origin/main  # ein anderer Ref
+quality deploy-check --wait 900   # auf laufende Checks warten, höchstens 15 Minuten
+```
+
+- **Welche Checks zählen**, sagt die Branch Protection des Standardbranches.
+  Eine zweite Liste im Projekt gibt es nicht. Bindet die Protection einen Check
+  an eine App, zählt nur ein Lauf dieser App.
+- **Nur `success` ist grün.** `skipped` und `neutral` zählen nicht: ein
+  übersprungenes Gate hat nichts geprüft. Nach einem Re-Run zählt der jüngste Lauf.
+- **Exit-Codes:** `0` grün, `1` blockiert (rot, läuft, fehlt), `2` keine Aussage
+  möglich (kein `gh`, kein Login, kein Netz, keine Pflicht-Checks). Jede
+  Unklarheit blockiert.
+- **Ein ungepushter Commit** hat keinen Lauf und endet mit «fehlt».
+- **Auf stdout** steht genau eine Zeile, etwa
+  `deploy-check: grün <sha> quality,tests`. Ein Deploy-Skript übernimmt sie ins
+  Log oder in eine Tag-Nachricht.
+
+Für den Notfall gibt es einen Override, nur mit Begründung:
+
+```bash
+QUALITY_DEPLOY_OVERRIDE="Hotfix Login, Runner ausgefallen" ./scripts/deploy.sh
+```
+
+Die Prüfung läuft trotzdem und meldet ihr Ergebnis. Danach lässt sie durch und
+schreibt `deploy-check: override <sha> — <Begründung>`. Ein leerer Wert zählt
+nicht. Wie der Aufruf in ein Deploy-Skript gehört, zeigt
+[`examples/deploy-gate.sh`](examples/deploy-gate.sh).
+
 ## Was das Framework NICHT vereinheitlicht
 
 Den **Linter im JS-Stack**: existiert ein `lint`-Skript, wird es aufgerufen.
