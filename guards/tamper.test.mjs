@@ -1578,3 +1578,153 @@ test('lokal: ein reiner Versionssprung erzeugt keinen Hinweis', () => {
   }
   assert.match(output.join(''), /keine Umgehungsmuster/)
 })
+
+/**
+ * Ein Repository im Zustand nach dem Merge eines Bot-PRs auf main.
+ *
+ * Der Bot hebt `yarn.lock` auf seinem Branch an. Ein Mensch merged per
+ * Merge-Commit. `mergeEdit` schreibt zusätzlichen Inhalt in den Merge-Commit
+ * selbst. `conflict` ändert `yarn.lock` vorher auch auf main; der Mensch löst
+ * den Konflikt mit der Fassung des Bots. Zurück kommt der Stand vor dem Merge
+ * als `base` — im Push-Lauf ist das `github.event.before`.
+ *
+ * @param {{ mergeEdit?: string, conflict?: boolean }} [options]
+ */
+function botMergeFixture({ mergeEdit, conflict = false } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'quality-botmerge-'))
+  const git = (/** @type {string[]} */ ...args) =>
+    execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  git('init', '--quiet', '--initial-branch=main')
+  git('config', 'user.email', 'rene@example.com')
+  git('config', 'user.name', 'René')
+  writeFileSync(join(root, 'yarn.lock'), 'paket@1.0.0\n')
+  git('add', '.')
+  git('commit', '--quiet', '-m', 'Lockfile')
+  git('checkout', '--quiet', '-b', 'dependabot/paket')
+  writeFileSync(join(root, 'yarn.lock'), 'paket@1.0.1\n')
+  git('add', '.')
+  git(
+    'commit',
+    '--quiet',
+    '--author=dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>',
+    '-m',
+    'Bump paket from 1.0.0 to 1.0.1',
+  )
+
+  git('checkout', '--quiet', 'main')
+  if (conflict) {
+    writeFileSync(join(root, 'yarn.lock'), 'paket@1.0.2\n')
+    git('commit', '--quiet', '-am', 'paket auf main angehoben')
+  }
+  const base = git('rev-parse', 'HEAD').trim()
+  try {
+    git('merge', '--quiet', '--no-ff', '--no-commit', 'dependabot/paket')
+  } catch {
+    // Konflikt: der Mensch übernimmt die Fassung des Bots.
+    git('checkout', '--theirs', 'yarn.lock')
+    git('add', 'yarn.lock')
+  }
+  if (mergeEdit) {
+    writeFileSync(join(root, 'yarn.lock'), `paket@1.0.1\n${mergeEdit}\n`)
+    git('add', '.')
+  }
+  git('commit', '--quiet', '-m', 'Merge pull request #57 from dependabot/paket')
+  return { root, base }
+}
+
+/**
+ * Führt `fn` mit einem menschlichen `GITHUB_ACTOR` aus — wie im Push-Lauf
+ * nach dem Merge. Der alte Wert kommt danach zurück.
+ *
+ * @template T
+ * @param {() => T} fn
+ * @returns {T}
+ */
+function asHumanActor(fn) {
+  const before = process.env.GITHUB_ACTOR
+  process.env.GITHUB_ACTOR = 'renestandout'
+  try {
+    return fn()
+  } finally {
+    if (before === undefined) delete process.env.GITHUB_ACTOR
+    else process.env.GITHUB_ACTOR = before
+  }
+}
+
+test('Push-Lauf: ein Merge-Commit ohne eigene Änderung hebt die Bot-Ausnahme nicht auf', () => {
+  // Realfall adboard PR #57: PR-Lauf grün, Merge b0cfca3 auf main rot.
+  const { root, base } = botMergeFixture()
+  try {
+    assert.equal(
+      asHumanActor(() => runTamper({ root, base, quiet: true })),
+      0,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Push-Lauf: eine eigene Änderung im Merge-Commit schaltet die Bot-Ausnahme ab', () => {
+  // Was der Mensch im Merge-Commit selbst schreibt, hat kein Bot geschrieben.
+  const { root, base } = botMergeFixture({ mergeEdit: 'fremd@6.6.6' })
+  try {
+    assert.equal(
+      asHumanActor(() => runTamper({ root, base, quiet: true })),
+      1,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Push-Lauf: ein menschlicher Commit neben dem Bot-Commit schaltet die Ausnahme ab', () => {
+  const { root, base } = botMergeFixture()
+  try {
+    writeFileSync(join(root, 'yarn.lock'), 'paket@1.0.1\nfremd@6.6.6\n')
+    execFileSync('git', ['commit', '--quiet', '-am', 'nachgeschoben'], { cwd: root })
+    assert.equal(
+      asHumanActor(() => runTamper({ root, base, quiet: true })),
+      1,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Push-Lauf: ein Konflikt, gelöst mit der Fassung des Bots, schaltet die Ausnahme ab', () => {
+  // `git diff-tree --cc` zeigt diese Lösung nicht, weil das Ergebnis einer
+  // Elternseite gleicht. Die Entscheidung im Konflikt hat trotzdem der Mensch
+  // getroffen, nicht der Bot.
+  const { root, base } = botMergeFixture({ conflict: true })
+  try {
+    assert.equal(
+      asHumanActor(() => runTamper({ root, base, quiet: true })),
+      1,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('PR-Lauf: «Update branch» eines Menschen hebt die Bot-Ausnahme nicht auf', () => {
+  // Der Mensch merged main in den Bot-Branch, ohne eigene Änderung. Der Lauf
+  // prüft den Bot-Branch gegen main.
+  const { root } = botMergeFixture()
+  const git = (/** @type {string[]} */ ...args) =>
+    execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+  try {
+    git('checkout', '--quiet', 'main')
+    git('reset', '--quiet', '--hard', 'HEAD~1')
+    writeFileSync(join(root, 'README.md'), 'neu\n')
+    git('add', '.')
+    git('commit', '--quiet', '-m', 'README')
+    git('checkout', '--quiet', 'dependabot/paket')
+    git('merge', '--quiet', '--no-ff', '--no-edit', 'main')
+    assert.equal(
+      asHumanActor(() => runTamper({ root, base: 'main', quiet: true })),
+      0,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

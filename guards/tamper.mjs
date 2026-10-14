@@ -629,7 +629,8 @@ export function baselineOnlyShrinks(file) {
  * Getragen wird das von `isBotAuthor` (guards/tamper-git.mjs): dort müssen
  * ALLE Autoren des Diffs Bots sein. Ein einziger menschlicher Commit im
  * selben PR schaltet beide Regeln wieder scharf — es lässt sich also nichts
- * in einem Bot-PR mitschmuggeln.
+ * in einem Bot-PR mitschmuggeln. Ein Merge-Commit ohne eigene Änderung zählt
+ * dabei nicht als Autor; einer mit eigener Änderung schon.
  *
  * @param {DiffFile[]} files
  * @param {{ botAuthor?: boolean, ignorePaths?: string[] }} [options]

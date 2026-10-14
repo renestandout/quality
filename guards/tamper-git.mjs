@@ -219,7 +219,35 @@ function markOwnVersionBumps(files, root, base) {
 }
 
 /**
+ * Trägt der Merge-Commit eine eigene Änderung?
+ *
+ * `git show --remerge-diff` vergleicht den Merge-Commit mit dem Ergebnis,
+ * das git selbst erzeugt hätte. Ein sauberer Merge liefert deshalb nichts.
+ * Jede Konfliktlösung und jede Zusatzänderung im Merge-Commit erscheint.
+ *
+ * `--cc` reicht dafür nicht. Es blendet Stellen aus, an denen das Ergebnis
+ * einer Elternseite gleicht. Ein Konflikt, gelöst mit der Fassung der
+ * Bot-Seite, bliebe so unsichtbar.
+ *
+ * Braucht git 2.36. Ein älteres git scheitert hier; `isBotAuthor` fängt den
+ * Fehler und meldet keinen Bot. Der Check bleibt also streng.
+ *
+ * @param {string} root
+ * @param {string} sha
+ * @returns {boolean}
+ */
+function mergeHasOwnChange(root, sha) {
+  return git(['show', '--remerge-diff', '--format=', sha], root).trim() !== ''
+}
+
+/**
  * Ermittelt, ob der Diff von einem Bot stammt (Renovate, Dependabot).
+ *
+ * Beim Merge eines Bot-PRs auf main ist der Merge-Commit vom Menschen, und
+ * im Push-Lauf ist auch `GITHUB_ACTOR` der Mensch. Ein Merge-Commit ohne
+ * eigene Änderung trägt nur Inhalt seiner Eltern. Er zählt deshalb nicht als
+ * Autor. Ein Merge-Commit mit eigener Änderung zählt wie jeder andere Commit.
+ * Ein pauschales `--no-merges` liesse diese Änderung ungeprüft durch.
  *
  * @param {string} root
  * @param {string | null} base
@@ -230,9 +258,15 @@ function isBotAuthor(root, base) {
   if (actor.endsWith('[bot]') || actor === 'renovate' || actor === 'dependabot') return true
   if (!base) return false
   try {
-    const authors = git(['log', `${base}..HEAD`, '--format=%an <%ae>'], root)
+    const authors = git(['log', `${base}..HEAD`, '--format=%H%x09%P%x09%an <%ae>'], root)
       .split('\n')
       .filter(Boolean)
+      .map((line) => {
+        const [sha = '', parents = '', author = ''] = line.split('\t')
+        return { sha, merge: parents.split(' ').length > 1, author }
+      })
+      .filter(({ sha, merge }) => !merge || mergeHasOwnChange(root, sha))
+      .map(({ author }) => author)
     return authors.length > 0 && authors.every((a) => /\[bot\]|renovate|dependabot/i.test(a))
   } catch {
     return false
