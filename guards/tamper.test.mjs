@@ -10,6 +10,7 @@ import {
   SOFT_LOCALLY,
   SOURCE_FILE,
   analyseDiff,
+  composerLockOnlyRehashes,
   findException,
   lockfileOnlyBumpsOwnVersion,
   isTestFile,
@@ -1304,13 +1305,136 @@ test('Lockfile: ein reiner Versionssprung meldet nicht', () => {
   assert.deepEqual(findings, [])
 })
 
-test('Lockfile: die Markierung gilt nur für package-lock.json', () => {
-  // Bei composer.lock zeigt allein der content-hash den Sprung an. Der ändert
-  // sich auch bei einer neuen Anforderung — er belegt also nichts.
+test('Lockfile: die Markierung gilt auch für composer.lock', () => {
   const findings = analyseDiff([
     { path: 'composer.lock', added: [], removed: [], deleted: false, ownVersionOnly: true },
   ])
-  assert.deepEqual(rules(findings), ['dependency.changed'])
+  assert.deepEqual(findings, [])
+})
+
+test('Lockfile: die Markierung gilt nicht für yarn.lock und pnpm-lock.yaml', () => {
+  // Beide führen die eigene Version nicht. Eine Markierung dort ist ein Fehler.
+  const findings = analyseDiff([
+    { path: 'yarn.lock', added: [], removed: [], deleted: false, ownVersionOnly: true },
+    { path: 'pnpm-lock.yaml', added: [], removed: [], deleted: false, ownVersionOnly: true },
+  ])
+  assert.deepEqual(rules(findings), ['dependency.changed', 'dependency.changed'])
+})
+
+/**
+ * Ein composer.json wie in calcup: `deploy.sh tag` hebt nur `version`.
+ *
+ * @param {string} version
+ * @param {Record<string, unknown>} [extra]
+ */
+const composerJson = (version, extra = {}) =>
+  JSON.stringify(
+    {
+      name: 'standout/calcup',
+      version,
+      require: { php: '^8.3', 'laravel/framework': '^12.0' },
+      ...extra,
+    },
+    null,
+    4,
+  ) + '\n'
+
+/**
+ * @param {string} hash
+ * @param {string} [laravel]
+ */
+const composerLock = (hash, laravel = 'v12.1.0') =>
+  JSON.stringify(
+    {
+      _readme: ['This file locks the dependencies of your project to a known state'],
+      'content-hash': hash,
+      packages: [{ name: 'laravel/framework', version: laravel }],
+      'packages-dev': [],
+    },
+    null,
+    4,
+  ) + '\n'
+
+test('composer.lock: nur der content-hash zum Versionssprung geändert', () => {
+  assert.equal(
+    composerLockOnlyRehashes({
+      lockBefore: composerLock('aaa'),
+      lockAfter: composerLock('bbb'),
+      manifestBefore: composerJson('2.0.50'),
+      manifestAfter: composerJson('2.0.51'),
+    }),
+    true,
+  )
+})
+
+test('composer.lock: content-hash und ein Paket geändert', () => {
+  assert.equal(
+    composerLockOnlyRehashes({
+      lockBefore: composerLock('aaa'),
+      lockAfter: composerLock('bbb', 'v12.2.0'),
+      manifestBefore: composerJson('2.0.50'),
+      manifestAfter: composerJson('2.0.51'),
+    }),
+    false,
+  )
+})
+
+test('composer.lock: nur der content-hash, aber composer.json mit neuer Anforderung', () => {
+  // `composer update --lock` nach einer neuen Anforderung ändert nur den
+  // content-hash. Die Abhängigkeitsänderung steckt dann in composer.json.
+  const require = { php: '^8.3', 'laravel/framework': '^12.0', 'guzzlehttp/guzzle': '^7.0' }
+  assert.equal(
+    composerLockOnlyRehashes({
+      lockBefore: composerLock('aaa'),
+      lockAfter: composerLock('bbb'),
+      manifestBefore: composerJson('2.0.50'),
+      manifestAfter: composerJson('2.0.50', { require }),
+    }),
+    false,
+  )
+})
+
+test('composer.lock: jedes Abhängigkeitsfeld in composer.json zählt', () => {
+  for (const extra of [
+    { 'require-dev': { 'phpunit/phpunit': '^11.0' } },
+    { conflict: { 'x/y': '*' } },
+    { replace: { 'x/y': '*' } },
+    { provide: { 'x/y': '1.0' } },
+    { 'minimum-stability': 'dev' },
+    { 'prefer-stable': true },
+    { repositories: [{ type: 'vcs', url: 'https://example.com/x.git' }] },
+    { config: { platform: { php: '8.3.0' } } },
+  ]) {
+    assert.equal(
+      composerLockOnlyRehashes({
+        lockBefore: composerLock('aaa'),
+        lockAfter: composerLock('bbb'),
+        manifestBefore: composerJson('2.0.50'),
+        manifestAfter: composerJson('2.0.51', extra),
+      }),
+      false,
+      JSON.stringify(extra),
+    )
+  }
+})
+
+test('composer.lock: fehlende oder ungültige Fassung zählt nie als Versionssprung', () => {
+  const ok = {
+    lockBefore: composerLock('aaa'),
+    lockAfter: composerLock('bbb'),
+    manifestBefore: composerJson('2.0.50'),
+    manifestAfter: composerJson('2.0.51'),
+  }
+  for (const key of /** @type {const} */ ([
+    'lockBefore',
+    'lockAfter',
+    'manifestBefore',
+    'manifestAfter',
+  ])) {
+    assert.equal(composerLockOnlyRehashes({ ...ok, [key]: null }), false, `${key} fehlt`)
+    assert.equal(composerLockOnlyRehashes({ ...ok, [key]: '{' }), false, `${key} kein JSON`)
+    assert.equal(composerLockOnlyRehashes({ ...ok, [key]: '[]' }), false, `${key} kein Objekt`)
+  }
 })
 
 /**
@@ -1365,6 +1489,76 @@ test('echter Diff: ein neu angelegtes Lockfile meldet in CI weiterhin', () => {
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+/**
+ * Ein Repository mit zwei Commits: composer.json und composer.lock vorher und nachher.
+ *
+ * @param {{ json: string, lock: string }} before
+ * @param {{ json: string, lock: string }} after
+ */
+function composerFixture(before, after) {
+  const root = mkdtempSync(join(tmpdir(), 'quality-composer-'))
+  const git = (/** @type {string[]} */ ...args) =>
+    execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+  git('init', '--quiet')
+  git('config', 'user.email', 'test@example.com')
+  git('config', 'user.name', 'Test')
+  writeFileSync(join(root, 'composer.json'), before.json)
+  writeFileSync(join(root, 'composer.lock'), before.lock)
+  git('add', '.')
+  git('commit', '--quiet', '-m', 'Lockfile')
+  writeFileSync(join(root, 'composer.json'), after.json)
+  writeFileSync(join(root, 'composer.lock'), after.lock)
+  git('add', '.')
+  git('commit', '--quiet', '--allow-empty', '-m', 'bump version to 2.0.51')
+  return root
+}
+
+test('echter Diff: composer.lock mit nur neuem content-hash meldet in CI nicht', () => {
+  const root = composerFixture(
+    { json: composerJson('2.0.50'), lock: composerLock('aaa') },
+    { json: composerJson('2.0.51'), lock: composerLock('bbb') },
+  )
+  try {
+    assert.equal(runTamper({ root, base: 'HEAD~1', quiet: true }), 0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('echter Diff: composer.lock mit content-hash und Paket meldet in CI weiterhin', () => {
+  const root = composerFixture(
+    { json: composerJson('2.0.50'), lock: composerLock('aaa') },
+    { json: composerJson('2.0.51'), lock: composerLock('bbb', 'v12.2.0') },
+  )
+  try {
+    assert.equal(runTamper({ root, base: 'HEAD~1', quiet: true }), 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('lokal: composer.lock mit nur neuem content-hash erzeugt keinen Hinweis', () => {
+  const root = composerFixture(
+    { json: composerJson('2.0.50'), lock: composerLock('aaa') },
+    { json: composerJson('2.0.50'), lock: composerLock('aaa') },
+  )
+  writeFileSync(join(root, 'composer.json'), composerJson('2.0.51'))
+  writeFileSync(join(root, 'composer.lock'), composerLock('bbb'))
+  /** @type {string[]} */
+  const output = []
+  const original = process.stdout.write
+  process.stdout.write = /** @type {typeof process.stdout.write} */ (
+    (/** @type {string} */ chunk) => output.push(String(chunk)) > 0
+  )
+  try {
+    assert.equal(runTamper({ root }), 0)
+  } finally {
+    process.stdout.write = original
+    rmSync(root, { recursive: true, force: true })
+  }
+  assert.match(output.join(''), /keine Umgehungsmuster/)
 })
 
 test('lokal: ein reiner Versionssprung erzeugt keinen Hinweis', () => {

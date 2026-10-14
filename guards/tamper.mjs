@@ -32,8 +32,9 @@ import { isDeepStrictEqual } from 'node:util'
 /**
  * Eine Datei aus dem Diff, wie parseDiff sie liefert.
  * `removed` fehlt bei Dateien, die nur als hinzugefügt gelten (untracked).
- * `ownVersionOnly` setzt tamper-git.mjs bei einem package-lock.json, dessen
- * beide Fassungen sich nur in der eigenen Paketversion unterscheiden.
+ * `ownVersionOnly` setzt tamper-git.mjs bei einem Lockfile, dessen beide
+ * Fassungen nur einen Versionssprung des eigenen Pakets abbilden: bei
+ * package-lock.json die Version, bei composer.lock den content-hash.
  *
  * @typedef {object} DiffFile
  * @property {string} path
@@ -153,10 +154,31 @@ const LOCKFILES = /(^|\/)(composer\.lock|package-lock\.json|pnpm-lock\.yaml|yarn
  * Das einzige Lockfile, das die Version des eigenen Pakets trägt.
  *
  * Gemessen am 12.10.2026: composer.lock, pnpm-lock.yaml und yarn.lock führen
- * sie nicht. composer.lock ändert bei einem Sprung nur den content-hash. Der
- * ändert sich aber auch bei einer neuen Anforderung und belegt deshalb nichts.
+ * sie nicht.
  */
 export const NPM_LOCKFILE = /(^|\/)package-lock\.json$/
+
+/**
+ * composer.lock ändert bei einem Versionssprung nur den content-hash. Der
+ * ändert sich aber auch bei einer neuen Anforderung. Belegen lässt sich der
+ * Sprung deshalb nur zusammen mit composer.json, siehe composerLockOnlyRehashes.
+ */
+export const COMPOSER_LOCKFILE = /(^|\/)composer\.lock$/
+
+/**
+ * Felder in composer.json, die bestimmen, welche Pakete installiert werden.
+ * `config.platform` gehört dazu und wird separat verglichen.
+ */
+const COMPOSER_DEPENDENCY_KEYS = [
+  'require',
+  'require-dev',
+  'conflict',
+  'replace',
+  'provide',
+  'minimum-stability',
+  'prefer-stable',
+  'repositories',
+]
 
 /**
  * Unterscheiden sich zwei Fassungen eines package-lock.json nur in der
@@ -190,6 +212,48 @@ export function lockfileOnlyBumpsOwnVersion(before, after) {
     const b = withoutOwnVersion(after)
     if (a === null || b === null) return false
     return isDeepStrictEqual(a, b)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Ändert sich composer.lock nur im content-hash, ohne dass sich eine
+ * Abhängigkeit ändert?
+ *
+ * Das trifft auf `composer update --lock` nach einem Versionssprung in
+ * composer.json zu. Zwei Bedingungen müssen gelten:
+ * - composer.lock ist bis auf `content-hash` gleich. Kein Paket ändert sich.
+ * - composer.json ist in allen Abhängigkeitsfeldern gleich. Sonst steckt die
+ *   Änderung in einer neuen Anforderung, die das Lockfile noch nicht abbildet.
+ *
+ * Im Zweifel `false`: fehlt eine Fassung oder ist sie kein JSON-Objekt, gilt
+ * die Änderung als echte Abhängigkeitsänderung.
+ *
+ * @param {{ lockBefore: string | null, lockAfter: string | null, manifestBefore: string | null, manifestAfter: string | null }} versions
+ * @returns {boolean}
+ */
+export function composerLockOnlyRehashes({ lockBefore, lockAfter, manifestBefore, manifestAfter }) {
+  const parse = (/** @type {string | null} */ text) => {
+    if (text === null) return null
+    const value = JSON.parse(text)
+    return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null
+  }
+
+  try {
+    const [lockA, lockB, jsonA, jsonB] = [lockBefore, lockAfter, manifestBefore, manifestAfter].map(
+      parse,
+    )
+    if (lockA === null || lockB === null || jsonA === null || jsonB === null) return false
+
+    delete lockA['content-hash']
+    delete lockB['content-hash']
+    if (!isDeepStrictEqual(lockA, lockB)) return false
+
+    for (const key of COMPOSER_DEPENDENCY_KEYS) {
+      if (!isDeepStrictEqual(jsonA[key], jsonB[key])) return false
+    }
+    return isDeepStrictEqual(jsonA.config?.platform, jsonB.config?.platform)
   } catch {
     return false
   }
@@ -608,9 +672,12 @@ export function analyseDiff(files, { botAuthor = false, ignorePaths = [] } = {})
       }
     }
 
-    // Ein reiner Versionssprung ändert keine Abhängigkeit. Nur bei
-    // package-lock.json lässt sich das belegen, siehe NPM_LOCKFILE.
-    const ownVersionOnly = file.ownVersionOnly === true && NPM_LOCKFILE.test(file.path)
+    // Ein reiner Versionssprung ändert keine Abhängigkeit. Belegen lässt sich
+    // das nur bei package-lock.json und composer.lock, siehe NPM_LOCKFILE und
+    // COMPOSER_LOCKFILE.
+    const ownVersionOnly =
+      file.ownVersionOnly === true &&
+      (NPM_LOCKFILE.test(file.path) || COMPOSER_LOCKFILE.test(file.path))
     if (LOCKFILES.test(file.path) && !botAuthor && !ownVersionOnly) {
       findings.push({
         rule: 'dependency.changed',

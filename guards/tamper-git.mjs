@@ -1,12 +1,14 @@
 import { execFileSync } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { c } from '../lib/run.mjs'
 import {
+  COMPOSER_LOCKFILE,
   EXCEPTION_TRAILER,
   NPM_LOCKFILE,
   SOFT_LOCALLY,
   analyseDiff,
+  composerLockOnlyRehashes,
   findException,
   lockfileOnlyBumpsOwnVersion,
   parseDiff,
@@ -152,8 +154,10 @@ function showAt(root, rev, path) {
 }
 
 /**
- * Markiert jedes package-lock.json, das sich nur in der eigenen Paketversion
- * ändert. Dafür liest sie beide Fassungen und übergibt sie dem JSON-Vergleich.
+ * Markiert jedes Lockfile, das nur einen Versionssprung des eigenen Pakets
+ * abbildet. Dafür liest sie beide Fassungen und übergibt sie dem JSON-Vergleich.
+ * Bei composer.lock liest sie zusätzlich beide Fassungen des composer.json
+ * im selben Verzeichnis.
  *
  * Die Fassungen passen zum geprüften Diff: mit `base` der Stand an der
  * Merge-Basis gegen HEAD (wie `base...HEAD`), ohne `base` HEAD gegen das
@@ -169,28 +173,48 @@ function markOwnVersionBumps(files, root, base) {
   /** @type {string | null | undefined} */
   let mergeBase
   return files.map((file) => {
-    if (file.deleted || !NPM_LOCKFILE.test(file.path)) return file
-    let before
-    let after
-    if (base) {
-      if (mergeBase === undefined) {
-        try {
-          mergeBase = git(['merge-base', base, 'HEAD'], root).trim()
-        } catch {
-          mergeBase = null
+    const npm = NPM_LOCKFILE.test(file.path)
+    const composer = COMPOSER_LOCKFILE.test(file.path)
+    if (file.deleted || (!npm && !composer)) return file
+
+    /** @param {string} path */
+    const versions = (path) => {
+      if (base) {
+        if (mergeBase === undefined) {
+          try {
+            mergeBase = git(['merge-base', base, 'HEAD'], root).trim()
+          } catch {
+            mergeBase = null
+          }
+        }
+        return {
+          before: mergeBase ? showAt(root, mergeBase, path) : null,
+          after: showAt(root, 'HEAD', path),
         }
       }
-      before = mergeBase ? showAt(root, mergeBase, file.path) : null
-      after = showAt(root, 'HEAD', file.path)
-    } else {
-      before = showAt(root, 'HEAD', file.path)
+      let after
       try {
-        after = readFileSync(join(root, file.path), 'utf8')
+        after = readFileSync(join(root, path), 'utf8')
       } catch {
         after = null
       }
+      return { before: showAt(root, 'HEAD', path), after }
     }
-    return lockfileOnlyBumpsOwnVersion(before, after) ? { ...file, ownVersionOnly: true } : file
+
+    const lock = versions(file.path)
+    let ownVersionOnly
+    if (npm) {
+      ownVersionOnly = lockfileOnlyBumpsOwnVersion(lock.before, lock.after)
+    } else {
+      const manifest = versions(join(dirname(file.path), 'composer.json'))
+      ownVersionOnly = composerLockOnlyRehashes({
+        lockBefore: lock.before,
+        lockAfter: lock.after,
+        manifestBefore: manifest.before,
+        manifestAfter: manifest.after,
+      })
+    }
+    return ownVersionOnly ? { ...file, ownVersionOnly: true } : file
   })
 }
 
