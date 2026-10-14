@@ -19,14 +19,14 @@ composer require --dev larastan/larastan laravel/pint   # Werkzeuge des laravel-
 JS/TS-Projekt:
 
 ```bash
-npm  install -D github:renestandout/quality#v0.2.12 prettier
-pnpm add     -D github:renestandout/quality#v0.2.12 prettier
+npm  install -D github:renestandout/quality#v0.2.13 prettier
+pnpm add     -D github:renestandout/quality#v0.2.13 prettier
 ```
 
 Python-Projekt — über npm, mit einer `package.json`, die nur dafür da ist:
 
 ```bash
-npm install -D github:renestandout/quality#v0.2.12
+npm install -D github:renestandout/quality#v0.2.13
 pip  install ruff mypy pytest pip-audit
 ```
 
