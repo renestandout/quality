@@ -12,6 +12,7 @@
  * Altlasten kann der Hook deshalb Meldungen zeigen, die nicht von dieser
  * Änderung stammen — die Meldung sagt das dazu.
  */
+import { exitAfterFlush } from '../lib/exit.mjs'
 import { findProjectRoot, readHookInput, relativeToRoot, runQuality } from './lib/hook-io.mjs'
 
 const TIMEOUT_MS = 8000
@@ -43,4 +44,4 @@ process.stderr.write(
     `lass sie stehen und erwähne sie — repariere sie nicht nebenbei mit.\n` +
     `Suppressions sind keine Lösung.\n`,
 )
-process.exit(2)
+await exitAfterFlush(2)

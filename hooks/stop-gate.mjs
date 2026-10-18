@@ -23,6 +23,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { exitAfterFlush } from '../lib/exit.mjs'
 import { findProjectRoot, readHookInput, runQuality } from './lib/hook-io.mjs'
 
 const TIMEOUT_MS = 45_000
@@ -152,7 +153,7 @@ if (timedOut) {
       'Erwähne das gegenüber dem Menschen — der Stand ist ungeprüft.\n',
   )
   clearAttempts(file)
-  process.exit(0)
+  await exitAfterFlush(0)
 }
 
 if (code === 0) {
@@ -170,7 +171,7 @@ if (next >= MAX_ATTEMPTS) {
       `versucht hast, und frage nach dem weiteren Vorgehen. Schalte die Prüfung nicht ab ` +
       `und arbeite nicht mit Suppressions.\n`,
   )
-  process.exit(2)
+  await exitAfterFlush(2)
 }
 
 process.stderr.write(
@@ -178,4 +179,4 @@ process.stderr.write(
     `Behebe die Ursache und schliesse den Task danach erneut ab. ` +
     `Eine Formatierung behebt \`quality fix\`.\n`,
 )
-process.exit(2)
+await exitAfterFlush(2)

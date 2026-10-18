@@ -229,3 +229,38 @@ test('eine Stufe namens constructor ist unbekannt und kein Absturz', () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// Gemeldet am 18.10.2026: Agents leiten die Ausgabe um und sehen das Ende
+// nicht. Ein Exit direkt nach dem letzten Write verwarf auf macOS, was noch in
+// der Pipe-Warteschlange lag — ausgerechnet die Zusammenfassung. Der Leser
+// beginnt hier absichtlich spät, sonst leert er die Pipe rechtzeitig.
+test('die Zusammenfassung kommt auch beim langsamen Leser an', () => {
+  const dir = lage({ eigeneDateiUnformatiert: true })
+  try {
+    // Ein Werkzeug mit viel Ausgabe, wie eine grosse Testsuite.
+    writeFileSync(
+      join(dir, 'node_modules', '.bin', 'prettier'),
+      "#!/usr/bin/env node\nprocess.stdout.write(('[warn] x'.repeat(12) + '\\n').repeat(20000))\nprocess.exitCode = 1\n",
+    )
+    const skript = `set -o pipefail; NO_COLOR=1 node "${QUALITY}" task --only fmt | (sleep 1; cat)`
+    let output = ''
+    let code = 0
+    try {
+      output = execFileSync('bash', ['-c', skript], {
+        cwd: dir,
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+      })
+    } catch (thrown) {
+      const err = /** @type {{ stdout?: string, status?: number | null }} */ (thrown)
+      output = err.stdout ?? ''
+      code = err.status ?? 1
+    }
+
+    assert.equal(code, 1)
+    assert.match(output, /── quality task --only fmt/)
+    assert.match(output, /Prüfungen fehlgeschlagen: prettier/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

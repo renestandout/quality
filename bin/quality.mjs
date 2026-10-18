@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { COMMANDS, ONLY_NAMES, STAGES, parseArgs, planFor } from '../lib/args.mjs'
 import { ConfigError, loadConfig } from '../lib/config.mjs'
+import { exitAfterFlush } from '../lib/exit.mjs'
 import { filesForComponent, filesForVerb } from '../lib/files.mjs'
 import { c, runSteps, summarize } from '../lib/run.mjs'
 import { YamlError } from '../lib/yaml.mjs'
@@ -449,8 +450,8 @@ async function main() {
 }
 
 main()
-  .then((code) => process.exit(code))
+  .then((code) => exitAfterFlush(code))
   .catch((err) => {
     process.stderr.write(c.red(`\n${err.stack ?? err.message}\n`))
-    process.exit(1)
+    return exitAfterFlush(1)
   })
