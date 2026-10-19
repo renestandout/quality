@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { c } from '../lib/run.mjs'
@@ -232,12 +232,29 @@ function markOwnVersionBumps(files, root, base) {
  * Braucht git 2.36. Ein älteres git scheitert hier; `isBotAuthor` fängt den
  * Fehler und meldet keinen Bot. Der Check bleibt also streng.
  *
+ * Kann git kein temporäres Objektverzeichnis anlegen (etwa im ddev-Container),
+ * meldet es das nur auf stderr und endet trotzdem mit Exit 0. stdout bleibt
+ * leer, der Merge sähe sauber aus. Deshalb gilt jede Ausgabe auf stderr als
+ * Fehler.
+ *
  * @param {string} root
  * @param {string} sha
  * @returns {boolean}
  */
 function mergeHasOwnChange(root, sha) {
-  return git(['show', '--remerge-diff', '--format=', sha], root).trim() !== ''
+  const args = ['show', '--remerge-diff', '--format=', sha]
+  const result = spawnSync('git', args, {
+    cwd: root,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  })
+  const stderr = result.stderr?.trim() ?? ''
+  if (result.error || result.status !== 0 || stderr !== '') {
+    throw new Error(
+      `git ${args.join(' ')} fehlgeschlagen: ${stderr || result.error?.message || `Status ${result.status}`}`,
+    )
+  }
+  return result.stdout.trim() !== ''
 }
 
 /**

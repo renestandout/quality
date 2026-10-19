@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -1736,6 +1736,29 @@ test('Push-Lauf: ein Konflikt, gelöst mit der Fassung des Bots, schaltet die Au
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test(
+  'Push-Lauf: scheitert --remerge-diff mit Exit 0, bleibt die Ausnahme aus',
+  // root schreibt trotz fehlender Rechte. Der Fehler liesse sich so nicht nachstellen.
+  { skip: process.getuid?.() === 0 },
+  () => {
+    // Realfall ddev-Container: git kann unter .git/objects kein temporäres
+    // Verzeichnis anlegen. git meldet das nur auf stderr und endet mit Exit 0.
+    // Die Konfliktlösung bliebe so unsichtbar.
+    const { root, base } = botMergeFixture({ conflict: true })
+    const objects = join(root, '.git', 'objects')
+    try {
+      chmodSync(objects, 0o555)
+      assert.equal(
+        asHumanActor(() => runTamper({ root, base, quiet: true })),
+        1,
+      )
+    } finally {
+      chmodSync(objects, 0o755)
+      rmSync(root, { recursive: true, force: true })
+    }
+  },
+)
 
 test('PR-Lauf: «Update branch» eines Menschen hebt die Bot-Ausnahme nicht auf', () => {
   // Der Mensch merged main in den Bot-Branch, ohne eigene Änderung. Der Lauf
