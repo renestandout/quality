@@ -112,6 +112,19 @@ Nicht umgehen, sondern sagen. Formuliere konkret:
 Das ist immer besser als ein stiller Workaround — der kostet später ein
 Vielfaches, weil niemand mehr weiss, dass er da ist.
 
+## Ausgabe umleiten in ddev-Projekten
+
+Leitest du die Ausgabe in eine Datei oder Pipe um, rufe `ddev exec composer …`
+auf, nicht `ddev composer …`.
+
+`ddev composer` puffert ohne Terminal die Ausgabe von Composer. Scheitert der
+Lauf, verwirft ddev diese Ausgabe und meldet einen eigenen Exit-Code. Im Log
+steht dann nur eine Zeile wie
+`Composer [test] failed, composer command failed: exit status 2`. Die
+fehlgeschlagenen Tests fehlen, und du musst die Suite ein zweites Mal laufen
+lassen. `ddev exec composer test > log 2>&1` gibt die volle Ausgabe und den
+echten Exit-Code weiter. Gemessen mit ddev v1.25.3.
+
 ## Befehle
 
 | Befehl                     | Wann                                                                    |
