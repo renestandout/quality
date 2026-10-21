@@ -120,15 +120,16 @@ ssh root@<vm> "apt-get update && apt-get install --only-upgrade 'php8.3-*' 'php8
 ssh root@<vm> 'php8.3 -v | head -1; php8.4 -v | head -1'
 ```
 
-Am 21.10.2026 kam PHP 8.4.27 nicht über apt. Die PPA hatte den Build fertig,
-aber noch nicht veröffentlicht. Die 12 installierten php8.4-Pakete stammen
-deshalb direkt aus dem Launchpad-Build 33861469. Ihre SHA256-Summen stimmen
-mit der `.changes`-Datei überein. Eine Repo-Signatur prüft dieser Weg nicht,
-die Herkunft sichert nur HTTPS. Pakete und Prüfsummen liegen in
-`/root/php8.4.27-debs`. Die Pakete `php8.4-fpm`, `-cgi` und
-`libapache2-mod-php8.4` sind bewusst nicht dabei: Ihr postinst würde FPM
+Am 21.10.2026 kamen PHP 8.4.27 und 8.3.36 nicht über apt. Die PPA hatte die
+Builds fertig, aber noch nicht im Paketindex. Die je 12 installierten Pakete
+stammen deshalb direkt aus den Launchpad-Builds 33861469 (php8.4) und
+33861458 (php8.3). Ihre SHA256-Summen stimmen mit der jeweiligen
+`.changes`-Datei überein. Eine Repo-Signatur prüft dieser Weg nicht, die
+Herkunft sichert nur HTTPS. Pakete und Prüfsummen liegen in
+`/root/php8.4.27-debs` und `/root/php8.3.36-debs`. Die Pakete `-fpm`, `-cgi`
+und `libapache2-mod-php` sind bewusst nicht dabei: Ihr postinst würde FPM
 wieder aktivieren. Die Dateien ausserhalb von dpkg bleiben deshalb auf
-8.4.24.
+8.4.24 und 8.3.33.
 
 Prüfe laufende Jobs nicht mit `pgrep -f Runner.Worker`. Das Muster steht in
 der eigenen Befehlszeile der SSH-Shell, und `pgrep` meldet dann immer einen
