@@ -98,6 +98,32 @@ ssh root@<vm> 'bash provision.sh'
 Workflow-Extensions, composer, shellcheck, den User `runner`.
 Node installiert `actions/setup-node` je Lauf selbst (respektiert `.nvmrc`).
 
+**Auf der VM liegt mehr PHP, als `provision.sh` installiert.** Am 21.10.2026
+lagen dort zusätzlich `php-fpm8.3/8.4`, `php-cgi8.3/8.4` und
+`libphp8.3/8.4.so` für Apache. Beide FPM-Dienste liefen seit dem 19.08.2026.
+Kein dpkg-Paket führt diese Dateien, und das dpkg-Log kennt ihre Installation
+nicht. Build-Zeit und Version gleichen den sury-CLI-Paketen. Vermutlich hat
+`setup-php` sie installiert. Belegt ist das nicht.
+
+Kein Workflow braucht FPM, und kein Webserver läuft. Wegen CVE-2026-109618
+und CVE-2026-109619 sind `php8.3-fpm` und `php8.4-fpm` seit dem 21.10.2026
+gestoppt und deaktiviert (`systemctl disable --now`). Die Sicherung von
+`/etc/php` liegt in `/root/backup-php-cve-20261021/etc-php.tgz`. Braucht ein
+Workflow FPM doch, schalte es mit `systemctl enable --now php8.4-fpm` wieder
+ein.
+
+**PHP-Sicherheitsupdates spielst du nur ein, wenn kein Job läuft.**
+
+```bash
+ssh root@<vm> 'ps -eo cmd | grep "[R]unner\.Worker" || echo "kein Job aktiv"'
+ssh root@<vm> "apt-get update && apt-get install --only-upgrade 'php8.3-*' 'php8.4-*'"
+ssh root@<vm> 'php8.3 -v | head -1; php8.4 -v | head -1'
+```
+
+Prüfe laufende Jobs nicht mit `pgrep -f Runner.Worker`. Das Muster steht in
+der eigenen Befehlszeile der SSH-Shell, und `pgrep` meldet dann immer einen
+Job.
+
 Zwei Dinge daran sind nicht offensichtlich, beide beim ersten Umzug
 aufgefallen:
 
