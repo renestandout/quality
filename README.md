@@ -16,6 +16,11 @@ composer require --dev standout/quality
 composer require --dev larastan/larastan laravel/pint   # Werkzeuge des laravel-Stacks
 ```
 
+Pint und PHPStan laufen im ddev-Container, wenn das Projekt eine
+`.ddev/config.yaml` hat und ddev läuft. Sonst laufen sie auf dem Host. Fehlt
+dort PHP und ddev ist gestoppt, meldet der Schritt `ddev start`. Der Runner
+startet ddev nie selbst.
+
 JS/TS-Projekt:
 
 ```bash

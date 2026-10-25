@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { findBinary, missingToolHint } from '../lib/tools.mjs'
+import { findBinary, missingToolHint, phpCommand } from '../lib/tools.mjs'
 
 /** @import { Stack, StackContext, Step } from '../lib/types.mjs' */
 
@@ -42,8 +42,7 @@ function phpstanStep(ctx, tool) {
   if (ctx.files?.length) args.push(...ctx.files)
   return {
     name: `phpstan level ${ctx.component.phpstanLevel} (${ctx.component.path})`,
-    cmd: tool,
-    args,
+    ...phpCommand(tool, args, ctx.dir),
     cwd: ctx.dir,
   }
 }
@@ -64,8 +63,7 @@ export default {
     else if (!ctx.full) args.push('--dirty')
     return {
       name: `pint${ctx.check ? ' (prüfend)' : ''} (${ctx.component.path})`,
-      cmd: tool,
-      args,
+      ...phpCommand(tool, args, ctx.dir),
       cwd: ctx.dir,
     }
   },
