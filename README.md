@@ -147,8 +147,8 @@ quality full --base "origin/$GITHUB_BASE_REF"   # Pull Request
 quality task --base main                        # lokal im Worktree
 ```
 
-Der Tamper-Check liest `--base` weiter wie bisher: mit Basis der Bereich
-`base...HEAD`, ohne Basis der lokale Modus.
+Der Tamper-Check liest `--base` genauso: mit Basis der Bereich `base...HEAD`
+plus der uncommittete Stand, ohne Basis der lokale Modus.
 
 ### Eine Stufe aufteilen: `--only`
 
@@ -380,7 +380,14 @@ zusichern — «entfernt nur» heisst nicht «entfernt die richtigen». Ein
 richtungsabhängiger Hook wäre ein zweiter, ungeprüfter Weg an derselben Datei.
 
 Lokal (`quality tamper`) wird der uncommittete Stand geprüft, inklusive noch
-nicht erfasster Dateien. In CI kommt der Vergleichsstand aus `--base`.
+nicht erfasster Dateien. In CI kommt der Vergleichsstand aus `--base`. Mit
+`--base` prüft der Check den Bereich `base...HEAD` und zusätzlich den
+uncommitteten Stand. Dieselbe Änderung ergibt so vor und nach dem Commit
+denselben Befund.
+
+Ohne `--base` und mit sauberem Arbeitsbaum gibt es nichts zu prüfen. Der Check
+meldet dann «nichts geprüft» statt grün. Das betrifft vor allem `quality full`
+in CI ohne `--base`: dort prüft nur der eigene Tamper-Schritt mit `--base`.
 
 **Der Check läuft in CI bei beiden Ereignissen**, nicht nur beim Pull Request.
 Das ist seit v0.2.5 so, und der Grund ist unser eigener Arbeitsablauf:

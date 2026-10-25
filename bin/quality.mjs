@@ -63,7 +63,7 @@ Optionen
                   ${c.dim('task/full: der fmt-Schritt blockiert nur noch dafür; eine')}
                   ${c.dim('Formatierung ausserhalb bleibt sichtbar, aber als Hinweis.')}
                   ${c.dim('fix/fast: ohne Wirkung — sie prüfen den uncommitteten Stand.')}
-                  ${c.dim('tamper: der geprüfte Bereich. Ohne --base: der lokale Modus.')}
+                  ${c.dim('tamper: der geprüfte Bereich. Ohne --base: nur der uncommittete Stand.')}
   --all           alle Komponenten prüfen, auch unveränderte
   --check         fix/fast: Formatierung nur prüfen, keine Datei ändern
                   ${c.dim('(task/full prüfen ohnehin nur)')}

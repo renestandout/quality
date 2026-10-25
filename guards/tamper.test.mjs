@@ -1782,3 +1782,83 @@ test('PR-Lauf: «Update branch» eines Menschen hebt die Bot-Ausnahme nicht auf'
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+/**
+ * Ein Repository mit .gitleaks.toml auf main und einem Task-Branch, der davon
+ * abzweigt. Der Branch hat noch keinen eigenen Commit.
+ */
+function gitleaksBranchFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'quality-tamper-'))
+  const git = (/** @type {string[]} */ ...args) =>
+    execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+  git('init', '--quiet', '--initial-branch=main')
+  git('config', 'user.email', 'test@example.com')
+  git('config', 'user.name', 'Test')
+  writeFileSync(join(root, '.gitleaks.toml'), '[allowlist]\nregexes = [\n]\n')
+  git('add', '.')
+  git('commit', '--quiet', '-m', 'erster Commit')
+  git('checkout', '--quiet', '-b', 'task/allowlist')
+  return { root, git }
+}
+
+/** Die Änderung aus resplan PR #22: eine erweiterte Secret-Ausnahme. */
+const erweiterteAllowlist = "[allowlist]\nregexes = [\n  '''SORT_KEY''',\n]\n"
+
+/**
+ * @param {() => number} fn
+ * @returns {{ code: number, output: string }}
+ */
+function withOutput(fn) {
+  /** @type {string[]} */
+  const output = []
+  const original = process.stdout.write
+  process.stdout.write = /** @type {typeof process.stdout.write} */ (
+    (/** @type {string} */ chunk) => output.push(String(chunk)) > 0
+  )
+  try {
+    return { code: fn(), output: output.join('') }
+  } finally {
+    process.stdout.write = original
+  }
+}
+
+test('--base prüft auch den uncommitteten Stand (resplan PR #22, Fall 1)', () => {
+  // Vor dem Commit meldete `quality tamper --base main` «keine Umgehungsmuster»,
+  // nach dem Commit zwei Treffer. Die Hilfe verspricht beides zusammen.
+  const { root } = gitleaksBranchFixture()
+  try {
+    writeFileSync(join(root, '.gitleaks.toml'), erweiterteAllowlist)
+    assert.equal(runTamper({ root, base: 'main', quiet: true }), 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('--base prüft auch neu angelegte, noch nicht erfasste Dateien', () => {
+  const { root } = gitleaksBranchFixture()
+  try {
+    mkdirSync(join(root, 'src'))
+    writeFileSync(join(root, 'src', 'a.ts'), '// @ts-ignore\nconst a = 1\n')
+    assert.equal(runTamper({ root, base: 'main', quiet: true }), 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('ohne --base und mit sauberem Arbeitsbaum meldet der Check nicht grün (Fall 4)', () => {
+  // So läuft `quality full` in CI ohne --base: alles ist committet, der lokale
+  // Modus sieht nichts. «keine Umgehungsmuster im Diff» wäre eine Aussage über
+  // einen Diff, den niemand geprüft hat.
+  const { root, git } = gitleaksBranchFixture()
+  try {
+    writeFileSync(join(root, '.gitleaks.toml'), erweiterteAllowlist)
+    git('commit', '--quiet', '-am', 'Allowlist erweitert')
+    const { code, output } = withOutput(() => runTamper({ root }))
+    assert.equal(code, 0)
+    assert.doesNotMatch(output, /keine Umgehungsmuster/)
+    assert.match(output, /nichts geprüft/)
+    assert.match(output, /--base/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

@@ -159,19 +159,16 @@ function showAt(root, rev, path) {
  * Bei composer.lock liest sie zusätzlich beide Fassungen des composer.json
  * im selben Verzeichnis.
  *
- * Die Fassungen passen zum geprüften Diff: mit `base` der Stand an der
- * Merge-Basis gegen HEAD (wie `base...HEAD`), ohne `base` HEAD gegen das
- * Arbeitsverzeichnis. Fehlt eine Fassung, bleibt die Datei unmarkiert und
- * die Regel meldet wie bisher.
+ * Die Fassungen passen zum geprüften Diff: vorher der Stand in `before`
+ * (Merge-Basis oder HEAD), nachher das Arbeitsverzeichnis. Fehlt eine
+ * Fassung, bleibt die Datei unmarkiert und die Regel meldet wie bisher.
  *
  * @param {DiffFile[]} files
  * @param {string} root
- * @param {string | null} base
+ * @param {string} before
  * @returns {DiffFile[]}
  */
-function markOwnVersionBumps(files, root, base) {
-  /** @type {string | null | undefined} */
-  let mergeBase
+function markOwnVersionBumps(files, root, before) {
   return files.map((file) => {
     const npm = NPM_LOCKFILE.test(file.path)
     const composer = COMPOSER_LOCKFILE.test(file.path)
@@ -179,26 +176,13 @@ function markOwnVersionBumps(files, root, base) {
 
     /** @param {string} path */
     const versions = (path) => {
-      if (base) {
-        if (mergeBase === undefined) {
-          try {
-            mergeBase = git(['merge-base', base, 'HEAD'], root).trim()
-          } catch {
-            mergeBase = null
-          }
-        }
-        return {
-          before: mergeBase ? showAt(root, mergeBase, path) : null,
-          after: showAt(root, 'HEAD', path),
-        }
-      }
       let after
       try {
         after = readFileSync(join(root, path), 'utf8')
       } catch {
         after = null
       }
-      return { before: showAt(root, 'HEAD', path), after }
+      return { before: showAt(root, before, path), after }
     }
 
     const lock = versions(file.path)
@@ -292,9 +276,10 @@ function isBotAuthor(root, base) {
 
 /**
  * Führt den Tamper-Check aus.
- * Mit `base` wird der Bereich base...HEAD geprüft — in CI der Zielbranch eines
- * Pull Requests oder der Stand vor einem Push. Ohne `base` gilt der
- * uncommittete Stand gegen HEAD (lokal, pre-commit).
+ * Mit `base` wird der Bereich base...HEAD geprüft, dazu der uncommittete
+ * Stand — in CI der Zielbranch eines Pull Requests oder der Stand vor einem
+ * Push. Ohne `base` gilt nur der uncommittete Stand gegen HEAD (lokal,
+ * pre-commit).
  *
  * @param {{ root: string, base?: string | null, ignorePaths?: string[], quiet?: boolean }} options
  * @returns {number}
@@ -315,17 +300,19 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
   if (base) assertRevisionExists(base, root)
   // Ohne ersten Commit gibt es kein HEAD: dann ist der gesamte Stand neu.
   const committed = hasCommit(root)
-  const diffText = base
-    ? git(['diff', '--unified=0', `${base}...HEAD`], root)
-    : committed
-      ? git(['diff', '--unified=0', 'HEAD'], root)
-      : ''
+  /*
+   * Mit `base` vergleicht der Check die Merge-Basis mit dem Arbeitsverzeichnis.
+   * Das ist base...HEAD plus der uncommittete Stand. Nur base...HEAD hiesse:
+   * dieselbe Änderung ist vor dem Commit grün und danach rot (resplan PR #22).
+   * In CI ist das Arbeitsverzeichnis sauber, dort ändert sich nichts.
+   */
+  const before = base ? git(['merge-base', base, 'HEAD'], root).trim() : 'HEAD'
+  const diffText = committed ? git(['diff', '--unified=0', before], root) : ''
 
-  // Nur im lokalen Modus: dort sind neu angelegte Dateien noch nicht erfasst.
-  // Mit `base` sind sie längst Teil der Commits und stehen im Diff.
+  // `git diff` kennt neu angelegte, noch nicht erfasste Dateien nicht.
   const files = [
-    ...markOwnVersionBumps(parseDiff(diffText), root, base),
-    ...(base ? [] : untrackedAsAdded(root, { includeCached: !committed })),
+    ...markOwnVersionBumps(parseDiff(diffText), root, before),
+    ...untrackedAsAdded(root, { includeCached: !committed }),
   ]
   const botAuthor = isBotAuthor(root, base)
   const all = analyseDiff(files, { botAuthor, ignorePaths })
@@ -348,7 +335,16 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
   const informational = localMode ? all.filter((f) => SOFT_LOCALLY.has(f.rule)) : []
 
   if (findings.length === 0) {
-    if (informational.length > 0 && !quiet) {
+    if (localMode && files.length === 0 && !quiet) {
+      // Ohne --base sieht der Check nur den uncommitteten Stand. In CI ist er
+      // leer: «keine Umgehungsmuster» wäre dort eine Aussage ohne Prüfung.
+      process.stdout.write(
+        c.dim(
+          'Tamper-Check: kein uncommitteter Stand — nichts geprüft. ' +
+            'Committete Änderungen prüft --base <ref>.\n',
+        ),
+      )
+    } else if (informational.length > 0 && !quiet) {
       process.stdout.write(
         c.dim(
           `Tamper-Check: ${informational.length} Hinweis(e) ohne Blockade — ` +
