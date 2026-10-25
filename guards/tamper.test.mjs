@@ -24,6 +24,9 @@ import {
 // node --test startet jede Testdatei in einem eigenen Prozess; das Löschen
 // wirkt deshalb nur hier.
 delete process.env.GITHUB_ACTOR
+// Auch CI fällt weg: GitHub Actions setzt CI=true, und runTamper liesse mit
+// --base dann den Arbeitsbaum aus. Ein Test, der CI braucht, setzt den Wert selbst.
+delete process.env.CI
 
 /**
  * Ein echtes Repository mit genau einem Commit — dem Stand nach dem ersten Push.
@@ -1822,13 +1825,96 @@ function withOutput(fn) {
   }
 }
 
-test('--base prüft auch den uncommitteten Stand (resplan PR #22, Fall 1)', () => {
+test('--base zeigt den uncommitteten Stand als Hinweis (resplan PR #22, Fall 1)', () => {
   // Vor dem Commit meldete `quality tamper --base main` «keine Umgehungsmuster»,
-  // nach dem Commit zwei Treffer. Die Hilfe verspricht beides zusammen.
+  // nach dem Commit zwei Treffer. Die Hilfe verspricht den Bereich und den
+  // uncommitteten Stand. Für den uncommitteten Teil gelten die lokalen Regeln:
+  // vor dem Commit gibt es keinen Trailer, der eine Allowlist begründen könnte.
   const { root } = gitleaksBranchFixture()
   try {
     writeFileSync(join(root, '.gitleaks.toml'), erweiterteAllowlist)
+    const { code, output } = withOutput(() => runTamper({ root, base: 'main' }))
+    assert.equal(code, 0)
+    assert.match(output, /Hinweis.*\.gitleaks\.toml.*In CI zählen sie/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('--base: committete Allowlist-Erweiterung blockiert weiterhin', () => {
+  const { root, git } = gitleaksBranchFixture()
+  try {
+    writeFileSync(join(root, '.gitleaks.toml'), erweiterteAllowlist)
+    git('commit', '--quiet', '-am', 'Allowlist erweitert')
     assert.equal(runTamper({ root, base: 'main', quiet: true }), 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('--base: ein Trailer im Commit winkt keine uncommittete Suppression durch', () => {
+  // Der Trailer begründet die committete Änderung, nicht alles, was danach kommt.
+  const { root, git } = gitleaksBranchFixture()
+  try {
+    writeFileSync(join(root, '.gitleaks.toml'), erweiterteAllowlist)
+    git('commit', '--quiet', '-am', 'Allowlist erweitert\n\nQuality-Exception: Sortier-Schluessel')
+    mkdirSync(join(root, 'src'))
+    writeFileSync(join(root, 'src', 'a.ts'), '// @ts-ignore\nconst a = 1\n')
+    assert.equal(runTamper({ root, base: 'main', quiet: true }), 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('--base: die Bot-Ausnahme gilt nicht für uncommittete Änderungen', () => {
+  // Alle Commits stammen vom Bot. Der Mensch ändert danach das Lockfile lokal.
+  // Die Bot-Ausnahme würde den Fund verschlucken; als Hinweis bleibt er sichtbar.
+  const { root, git } = gitleaksBranchFixture()
+  try {
+    writeFileSync(join(root, 'yarn.lock'), 'paket@1.0.1\n')
+    git('add', '.')
+    git(
+      'commit',
+      '--quiet',
+      '--author=dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>',
+      '-m',
+      'Bump paket',
+    )
+    writeFileSync(join(root, 'yarn.lock'), 'paket@1.0.1\nfremd@6.6.6\n')
+    const { code, output } = withOutput(() => runTamper({ root, base: 'main' }))
+    assert.equal(code, 0)
+    assert.match(output, /Hinweis.*yarn\.lock/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('--base in CI: der Arbeitsbaum bleibt aussen vor', () => {
+  // In CI läuft der Tamper-Schritt nach Build und Tests. Was dabei entsteht,
+  // hat kein Autor geschrieben und kein Commit kann es begründen.
+  const { root } = gitleaksBranchFixture()
+  const before = process.env.CI
+  process.env.CI = 'true'
+  try {
+    mkdirSync(join(root, 'src'))
+    writeFileSync(join(root, 'src', 'gen.d.ts'), '// @ts-ignore\nexport {}\n')
+    assert.equal(runTamper({ root, base: 'main', quiet: true }), 0)
+  } finally {
+    if (before === undefined) delete process.env.CI
+    else process.env.CI = before
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('--base ohne gemeinsamen Stand nennt die Ursache', () => {
+  const { root, git } = gitleaksBranchFixture()
+  try {
+    git('checkout', '--quiet', '--orphan', 'fremd')
+    git('commit', '--quiet', '-m', 'fremde Historie')
+    assert.throws(
+      () => runTamper({ root, base: 'main', quiet: true }),
+      /Kein gemeinsamer Stand zwischen "main" und HEAD/,
+    )
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

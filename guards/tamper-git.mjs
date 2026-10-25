@@ -159,16 +159,18 @@ function showAt(root, rev, path) {
  * Bei composer.lock liest sie zusätzlich beide Fassungen des composer.json
  * im selben Verzeichnis.
  *
- * Die Fassungen passen zum geprüften Diff: vorher der Stand in `before`
- * (Merge-Basis oder HEAD), nachher das Arbeitsverzeichnis. Fehlt eine
- * Fassung, bleibt die Datei unmarkiert und die Regel meldet wie bisher.
+ * Die Fassungen passen zum geprüften Diff: vorher der Stand im Commit
+ * `before`, nachher der Stand im Commit `after`. Ohne `after` gilt das
+ * Arbeitsverzeichnis. Fehlt eine Fassung, bleibt die Datei unmarkiert und
+ * die Regel meldet wie bisher.
  *
  * @param {DiffFile[]} files
  * @param {string} root
  * @param {string} before
+ * @param {string | null} after
  * @returns {DiffFile[]}
  */
-function markOwnVersionBumps(files, root, before) {
+function markOwnVersionBumps(files, root, before, after) {
   return files.map((file) => {
     const npm = NPM_LOCKFILE.test(file.path)
     const composer = COMPOSER_LOCKFILE.test(file.path)
@@ -176,13 +178,14 @@ function markOwnVersionBumps(files, root, before) {
 
     /** @param {string} path */
     const versions = (path) => {
-      let after
+      if (after) return { before: showAt(root, before, path), after: showAt(root, after, path) }
+      let current
       try {
-        after = readFileSync(join(root, path), 'utf8')
+        current = readFileSync(join(root, path), 'utf8')
       } catch {
-        after = null
+        current = null
       }
-      return { before: showAt(root, before, path), after }
+      return { before: showAt(root, before, path), after: current }
     }
 
     const lock = versions(file.path)
@@ -275,11 +278,41 @@ function isBotAuthor(root, base) {
 }
 
 /**
- * Führt den Tamper-Check aus.
- * Mit `base` wird der Bereich base...HEAD geprüft, dazu der uncommittete
- * Stand — in CI der Zielbranch eines Pull Requests oder der Stand vor einem
- * Push. Ohne `base` gilt nur der uncommittete Stand gegen HEAD (lokal,
- * pre-commit).
+ * Der gemeinsame Stand von `base` und HEAD.
+ * Fehlt er, ist der Bereich base...HEAD nicht bestimmbar. Meist fehlt in CI
+ * die Vorgeschichte, weil der Checkout flach ist.
+ *
+ * @param {string} base
+ * @param {string} root
+ * @returns {string}
+ */
+function mergeBaseOf(base, root) {
+  try {
+    return execFileSync('git', ['merge-base', base, 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch {
+    throw new Error(
+      `Kein gemeinsamer Stand zwischen "${base}" und HEAD — der Bereich ${base}...HEAD ist nicht bestimmbar.\n` +
+        '  In CI fehlt dafür meist die Vorgeschichte: actions/checkout braucht dann fetch-depth: 0.',
+    )
+  }
+}
+
+/**
+ * Führt den Tamper-Check aus. Er prüft zwei Teile getrennt.
+ *
+ * Der committete Teil ist der Bereich base...HEAD, nur mit `base` — in CI der
+ * Zielbranch eines Pull Requests oder der Stand vor einem Push. Hier gelten
+ * alle Regeln, der Trailer und die Bot-Ausnahme.
+ *
+ * Der uncommittete Teil ist HEAD gegen das Arbeitsverzeichnis, samt neuer
+ * Dateien. Hier gelten die lokalen Regeln: einige Funde sind nur Hinweise,
+ * und weder Trailer noch Bot-Ausnahme greifen. Mit `base` entfällt dieser
+ * Teil in CI. Dort laufen vorher Build und Tests, und deren Ausgabe hat kein
+ * Autor geschrieben.
  *
  * @param {{ root: string, base?: string | null, ignorePaths?: string[], quiet?: boolean }} options
  * @returns {number}
@@ -300,22 +333,33 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
   if (base) assertRevisionExists(base, root)
   // Ohne ersten Commit gibt es kein HEAD: dann ist der gesamte Stand neu.
   const committed = hasCommit(root)
-  /*
-   * Mit `base` vergleicht der Check die Merge-Basis mit dem Arbeitsverzeichnis.
-   * Das ist base...HEAD plus der uncommittete Stand. Nur base...HEAD hiesse:
-   * dieselbe Änderung ist vor dem Commit grün und danach rot (resplan PR #22).
-   * In CI ist das Arbeitsverzeichnis sauber, dort ändert sich nichts.
-   */
-  const before = base ? git(['merge-base', base, 'HEAD'], root).trim() : 'HEAD'
-  const diffText = committed ? git(['diff', '--unified=0', before], root) : ''
-
-  // `git diff` kennt neu angelegte, noch nicht erfasste Dateien nicht.
-  const files = [
-    ...markOwnVersionBumps(parseDiff(diffText), root, before),
-    ...untrackedAsAdded(root, { includeCached: !committed }),
-  ]
   const botAuthor = isBotAuthor(root, base)
-  const all = analyseDiff(files, { botAuthor, ignorePaths })
+
+  /** @type {Finding[]} */
+  let branchFindings = []
+  if (base) {
+    const mergeBase = mergeBaseOf(base, root)
+    const diffText = git(['diff', '--unified=0', mergeBase, 'HEAD'], root)
+    const files = markOwnVersionBumps(parseDiff(diffText), root, mergeBase, 'HEAD')
+    branchFindings = analyseDiff(files, { botAuthor, ignorePaths })
+  }
+
+  /** @type {DiffFile[]} */
+  let worktreeFiles = []
+  if (!base || !process.env.CI) {
+    const diffText = committed ? git(['diff', '--unified=0', 'HEAD'], root) : ''
+    // `git diff` kennt neu angelegte, noch nicht erfasste Dateien nicht.
+    worktreeFiles = [
+      ...markOwnVersionBumps(parseDiff(diffText), root, 'HEAD', null),
+      ...untrackedAsAdded(root, { includeCached: !committed }),
+    ]
+  }
+  // Die Commits eines Bots sagen nichts über Änderungen, die noch in keinem
+  // Commit stehen. Ohne `base` zählt nur GITHUB_ACTOR, wie bisher.
+  const worktreeAll = analyseDiff(worktreeFiles, {
+    botAuthor: base ? false : botAuthor,
+    ignorePaths,
+  })
 
   /*
    * Lokal wiegen zwei Regeln leichter als in CI.
@@ -330,12 +374,11 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
    * Die Regeln, die Agentenverhalten betreffen — Suppressions, stillgelegte
    * oder gelöschte Tests — blockieren auch lokal.
    */
-  const localMode = !base
-  const findings = localMode ? all.filter((f) => !SOFT_LOCALLY.has(f.rule)) : all
-  const informational = localMode ? all.filter((f) => SOFT_LOCALLY.has(f.rule)) : []
+  const worktreeFindings = worktreeAll.filter((f) => !SOFT_LOCALLY.has(f.rule))
+  const informational = worktreeAll.filter((f) => SOFT_LOCALLY.has(f.rule))
 
-  if (findings.length === 0) {
-    if (localMode && files.length === 0 && !quiet) {
+  if (branchFindings.length === 0 && worktreeFindings.length === 0) {
+    if (!base && worktreeFiles.length === 0 && !quiet) {
       // Ohne --base sieht der Check nur den uncommitteten Stand. In CI ist er
       // leer: «keine Umgehungsmuster» wäre dort eine Aussage ohne Prüfung.
       process.stdout.write(
@@ -359,34 +402,37 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
 
   const messages = base ? git(['log', `${base}..HEAD`, '--format=%B%x00'], root).split('\0') : []
   const exception = findException(messages)
+  // Der Trailer begründet nur, was in einem Commit steht.
+  const excused = exception ? branchFindings : []
+  const blocking = [...(exception ? [] : branchFindings), ...worktreeFindings]
 
   const write = (/** @type {string} */ s) => process.stdout.write(s)
   write('\n' + c.bold('── Tamper-Check ──') + '\n')
 
-  /** @type {Map<string, Finding[]>} */
+  /** @type {Map<string, { finding: Finding, excused: boolean }[]>} */
   const byFile = new Map()
-  for (const f of findings) {
+  for (const f of [...branchFindings, ...worktreeFindings]) {
     if (!byFile.has(f.path)) byFile.set(f.path, [])
     // Die Zeile darüber legt den Eintrag an, falls er fehlt.
-    const list = /** @type {Finding[]} */ (byFile.get(f.path))
-    list.push(f)
+    const list = /** @type {{ finding: Finding, excused: boolean }[]} */ (byFile.get(f.path))
+    list.push({ finding: f, excused: excused.includes(f) })
   }
   for (const [path, entries] of byFile) {
     write(`\n${c.bold(path)}\n`)
-    for (const e of entries) {
+    for (const { finding: e, excused: ok } of entries) {
       const where = e.line ? `${c.dim(`:${e.line}`)}` : ''
-      write(`  ${exception ? c.yellow('!') : c.red('✗')} ${e.label}${where}\n`)
+      write(`  ${ok ? c.yellow('!') : c.red('✗')} ${e.label}${where}\n`)
       if (e.detail) write(`      ${c.dim(e.detail)}\n`)
     }
   }
 
-  if (exception) {
-    write(c.yellow(`\n${findings.length} Treffer, durchgewinkt per Ausnahme: „${exception}"\n`))
-    return 0
+  if (excused.length > 0) {
+    write(c.yellow(`\n${excused.length} Treffer, durchgewinkt per Ausnahme: „${exception}"\n`))
   }
+  if (blocking.length === 0) return 0
 
   write(
-    c.red(`\n${findings.length} Treffer.`) +
+    c.red(`\n${blocking.length} Treffer.`) +
       ' Diese Änderungen verschieben das Gate, statt es zu erfüllen.\n',
   )
   write(
