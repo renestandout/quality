@@ -294,11 +294,34 @@ function mergeBaseOf(base, root) {
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim()
   } catch {
-    throw new Error(
-      `Kein gemeinsamer Stand zwischen "${base}" und HEAD — der Bereich ${base}...HEAD ist nicht bestimmbar.\n` +
-        '  In CI fehlt dafür meist die Vorgeschichte: actions/checkout braucht dann fetch-depth: 0.',
-    )
+    throw noMergeBaseError(base)
   }
+}
+
+/**
+ * Der Fehler für einen Bereich base...HEAD ohne gemeinsamen Stand.
+ *
+ * @param {string} base
+ * @returns {Error}
+ */
+export function noMergeBaseError(base) {
+  return new Error(
+    `Kein gemeinsamer Stand zwischen "${base}" und HEAD — der Bereich ${base}...HEAD ist nicht bestimmbar.\n` +
+      '  In CI fehlt dafür meist die Vorgeschichte: actions/checkout braucht dann fetch-depth: 0.',
+  )
+}
+
+/**
+ * Läuft der Prozess in CI?
+ * GitHub Actions, GitLab und die meisten anderen Dienste setzen CI=true.
+ * Jenkins setzt die Variable nicht. "false" und "0" gelten als lokal.
+ *
+ * @param {Record<string, string | undefined>} env
+ * @returns {boolean}
+ */
+export function isCi(env) {
+  const value = env.CI?.trim() ?? ''
+  return value !== '' && value !== 'false' && value !== '0'
 }
 
 /**
@@ -310,14 +333,15 @@ function mergeBaseOf(base, root) {
  *
  * Der uncommittete Teil ist HEAD gegen das Arbeitsverzeichnis, samt neuer
  * Dateien. Hier gelten die lokalen Regeln: einige Funde sind nur Hinweise,
- * und weder Trailer noch Bot-Ausnahme greifen. Mit `base` entfällt dieser
- * Teil in CI. Dort laufen vorher Build und Tests, und deren Ausgabe hat kein
- * Autor geschrieben.
+ * und weder Trailer noch Bot-Ausnahme greifen. Mit `base` lässt
+ * `worktree: false` diesen Teil aus. Das braucht CI: dort laufen vorher Build
+ * und Tests, und deren Ausgabe hat kein Autor geschrieben. Ohne `base` ist
+ * dieser Teil die ganze Prüfung und läuft immer.
  *
- * @param {{ root: string, base?: string | null, ignorePaths?: string[], quiet?: boolean }} options
+ * @param {{ root: string, base?: string | null, worktree?: boolean, ignorePaths?: string[], quiet?: boolean }} options
  * @returns {number}
  */
-export function runTamper({ root, base = null, ignorePaths = [], quiet = false }) {
+export function runTamper({ root, base = null, worktree = true, ignorePaths = [], quiet = false }) {
   // Beim ersten Push eines Branches gibt es keinen Stand davor. Sauber
   // überspringen, statt an git zu scheitern — und nicht auf den lokalen Modus
   // zurückfallen: der prüfte in CI den uncommitteten Stand und meldete grün,
@@ -346,7 +370,7 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
 
   /** @type {DiffFile[]} */
   let worktreeFiles = []
-  if (!base || !process.env.CI) {
+  if (!base || worktree) {
     const diffText = committed ? git(['diff', '--unified=0', 'HEAD'], root) : ''
     // `git diff` kennt neu angelegte, noch nicht erfasste Dateien nicht.
     worktreeFiles = [
@@ -377,6 +401,12 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
   const worktreeFindings = worktreeAll.filter((f) => !SOFT_LOCALLY.has(f.rule))
   const informational = worktreeAll.filter((f) => SOFT_LOCALLY.has(f.rule))
 
+  const hint = () =>
+    c.dim(
+      `Tamper-Check: ${informational.length} Hinweis(e) ohne Blockade — ` +
+        `${informational.map((f) => f.path).join(', ')}. In CI zählen sie.\n`,
+    )
+
   if (branchFindings.length === 0 && worktreeFindings.length === 0) {
     if (!base && worktreeFiles.length === 0 && !quiet) {
       // Ohne --base sieht der Check nur den uncommitteten Stand. In CI ist er
@@ -388,12 +418,7 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
         ),
       )
     } else if (informational.length > 0 && !quiet) {
-      process.stdout.write(
-        c.dim(
-          `Tamper-Check: ${informational.length} Hinweis(e) ohne Blockade — ` +
-            `${informational.map((f) => f.path).join(', ')}. In CI zählen sie.\n`,
-        ),
-      )
+      process.stdout.write(hint())
     } else if (!quiet) {
       process.stdout.write(c.green('✓ Tamper-Check: keine Umgehungsmuster im Diff.\n'))
     }
@@ -403,7 +428,7 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
   const messages = base ? git(['log', `${base}..HEAD`, '--format=%B%x00'], root).split('\0') : []
   const exception = findException(messages)
   // Der Trailer begründet nur, was in einem Commit steht.
-  const excused = exception ? branchFindings : []
+  const excused = exception ? branchFindings.length : 0
   const blocking = [...(exception ? [] : branchFindings), ...worktreeFindings]
 
   const write = (/** @type {string} */ s) => process.stdout.write(s)
@@ -411,11 +436,16 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
 
   /** @type {Map<string, { finding: Finding, excused: boolean }[]>} */
   const byFile = new Map()
-  for (const f of [...branchFindings, ...worktreeFindings]) {
-    if (!byFile.has(f.path)) byFile.set(f.path, [])
+  const entries = [
+    ...branchFindings.map((finding) => ({ finding, excused: Boolean(exception) })),
+    ...worktreeFindings.map((finding) => ({ finding, excused: false })),
+  ]
+  for (const entry of entries) {
+    const { path } = entry.finding
+    if (!byFile.has(path)) byFile.set(path, [])
     // Die Zeile darüber legt den Eintrag an, falls er fehlt.
-    const list = /** @type {{ finding: Finding, excused: boolean }[]} */ (byFile.get(f.path))
-    list.push({ finding: f, excused: excused.includes(f) })
+    const list = /** @type {{ finding: Finding, excused: boolean }[]} */ (byFile.get(path))
+    list.push(entry)
   }
   for (const [path, entries] of byFile) {
     write(`\n${c.bold(path)}\n`)
@@ -426,9 +456,10 @@ export function runTamper({ root, base = null, ignorePaths = [], quiet = false }
     }
   }
 
-  if (excused.length > 0) {
-    write(c.yellow(`\n${excused.length} Treffer, durchgewinkt per Ausnahme: „${exception}"\n`))
+  if (excused > 0) {
+    write(c.yellow(`\n${excused} Treffer, durchgewinkt per Ausnahme: „${exception}"\n`))
   }
+  if (informational.length > 0) write('\n' + hint())
   if (blocking.length === 0) return 0
 
   write(

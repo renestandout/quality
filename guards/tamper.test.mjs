@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { isNullRef, runTamper } from './tamper-git.mjs'
+import { isCi, isNullRef, runTamper } from './tamper-git.mjs'
 import {
   PROTECTED_PATHS,
   SOFT_LOCALLY,
@@ -24,9 +24,6 @@ import {
 // node --test startet jede Testdatei in einem eigenen Prozess; das Löschen
 // wirkt deshalb nur hier.
 delete process.env.GITHUB_ACTOR
-// Auch CI fällt weg: GitHub Actions setzt CI=true, und runTamper liesse mit
-// --base dann den Arbeitsbaum aus. Ein Test, der CI braucht, setzt den Wert selbst.
-delete process.env.CI
 
 /**
  * Ein echtes Repository mit genau einem Commit — dem Stand nach dem ersten Push.
@@ -1889,19 +1886,58 @@ test('--base: die Bot-Ausnahme gilt nicht für uncommittete Änderungen', () => 
   }
 })
 
-test('--base in CI: der Arbeitsbaum bleibt aussen vor', () => {
+test('--base mit worktree: false: das Arbeitsverzeichnis bleibt aussen vor', () => {
   // In CI läuft der Tamper-Schritt nach Build und Tests. Was dabei entsteht,
   // hat kein Autor geschrieben und kein Commit kann es begründen.
   const { root } = gitleaksBranchFixture()
-  const before = process.env.CI
-  process.env.CI = 'true'
   try {
     mkdirSync(join(root, 'src'))
     writeFileSync(join(root, 'src', 'gen.d.ts'), '// @ts-ignore\nexport {}\n')
-    assert.equal(runTamper({ root, base: 'main', quiet: true }), 0)
+    assert.equal(runTamper({ root, base: 'main', worktree: false, quiet: true }), 0)
   } finally {
-    if (before === undefined) delete process.env.CI
-    else process.env.CI = before
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('isCi: nur ein gesetztes CI ausser "false" und "0" zählt als CI', () => {
+  assert.equal(isCi({ CI: 'true' }), true)
+  assert.equal(isCi({ CI: '1' }), true)
+  assert.equal(isCi({}), false)
+  assert.equal(isCi({ CI: '' }), false)
+  assert.equal(isCi({ CI: 'false' }), false)
+  assert.equal(isCi({ CI: '0' }), false)
+})
+
+test('--base: Hinweise erscheinen auch neben einem blockierenden Fund', () => {
+  // Sonst bliebe die uncommittete Allowlist unsichtbar, bis der Fund im
+  // committeten Teil behoben ist.
+  const { root, git } = gitleaksBranchFixture()
+  try {
+    mkdirSync(join(root, 'src'))
+    writeFileSync(join(root, 'src', 'a.ts'), '// @ts-ignore\nconst a = 1\n')
+    git('add', '.')
+    git('commit', '--quiet', '-m', 'Suppression')
+    writeFileSync(join(root, '.gitleaks.toml'), erweiterteAllowlist)
+    const { code, output } = withOutput(() => runTamper({ root, base: 'main' }))
+    assert.equal(code, 1)
+    assert.match(output, /Hinweis.*\.gitleaks\.toml.*In CI zählen sie/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('--base: Hinweise erscheinen auch neben einem durchgewinkten Fund', () => {
+  const { root, git } = gitleaksBranchFixture()
+  try {
+    mkdirSync(join(root, 'src'))
+    writeFileSync(join(root, 'src', 'a.ts'), '// @ts-ignore\nconst a = 1\n')
+    git('add', '.')
+    git('commit', '--quiet', '-m', 'Suppression\n\nQuality-Exception: Altlast')
+    writeFileSync(join(root, '.gitleaks.toml'), erweiterteAllowlist)
+    const { code, output } = withOutput(() => runTamper({ root, base: 'main' }))
+    assert.equal(code, 0)
+    assert.match(output, /Hinweis.*\.gitleaks\.toml.*In CI zählen sie/)
+  } finally {
     rmSync(root, { recursive: true, force: true })
   }
 })
@@ -1931,7 +1967,7 @@ test('--base prüft auch neu angelegte, noch nicht erfasste Dateien', () => {
   }
 })
 
-test('ohne --base und mit sauberem Arbeitsbaum meldet der Check nicht grün (Fall 4)', () => {
+test('ohne --base und mit sauberem Arbeitsverzeichnis meldet der Check nicht grün (Fall 4)', () => {
   // So läuft `quality full` in CI ohne --base: alles ist committet, der lokale
   // Modus sieht nichts. «keine Umgehungsmuster im Diff» wäre eine Aussage über
   // einen Diff, den niemand geprüft hat.

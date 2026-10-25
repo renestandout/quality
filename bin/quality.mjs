@@ -8,7 +8,14 @@ import { exitAfterFlush } from '../lib/exit.mjs'
 import { filesForComponent, filesForVerb } from '../lib/files.mjs'
 import { c, runSteps, summarize } from '../lib/run.mjs'
 import { YamlError } from '../lib/yaml.mjs'
-import { assertRevisionExists, hasCommit, isNullRef, runTamper } from '../guards/tamper-git.mjs'
+import {
+  assertRevisionExists,
+  hasCommit,
+  isCi,
+  isNullRef,
+  noMergeBaseError,
+  runTamper,
+} from '../guards/tamper-git.mjs'
 
 /** @import { Options } from '../lib/args.mjs' */
 /** @import { Stack } from '../lib/types.mjs' */
@@ -234,10 +241,7 @@ function branchFiles(root, base) {
     // wäre dann als "nichts geändert" gelesen, und der fmt-Schritt erklärte
     // die ganze Komponente zum Bestand. Ein Gate, das bei Unklarheit lockerer
     // wird, ist keine Zusage.
-    throw new Error(
-      `Kein gemeinsamer Stand zwischen "${base}" und HEAD — der Bereich ${base}...HEAD ist nicht bestimmbar.\n` +
-        '  In CI fehlt dafür meist die Vorgeschichte: actions/checkout braucht dann fetch-depth: 0.',
-    )
+    throw noMergeBaseError(base)
   }
   return [...new Set([...range, ...changedFiles(root)])].filter((f) => existsSync(join(root, f)))
 }
@@ -436,6 +440,8 @@ async function main() {
       const tamperCode = runTamper({
         root: config.root,
         base: options.base,
+        // In CI liegt im Arbeitsverzeichnis die Ausgabe von Build und Tests.
+        worktree: !isCi(process.env),
         ignorePaths: config.tamperIgnore,
         quiet: options.quiet,
       })

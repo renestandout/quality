@@ -386,18 +386,20 @@ Mit `--base` prüft der Check zwei Teile getrennt:
 
 - **Committet** (`base...HEAD`): alle Regeln. Ein Trailer im Commit und die
   Bot-Ausnahme gelten nur für diesen Teil.
-- **Uncommittet** (HEAD gegen Arbeitsbaum, samt neuer Dateien): die lokalen
-  Regeln. Eine erweiterte Allowlist erscheint hier als Hinweis, eine neue
-  Suppression blockiert. In CI (`CI=true`) entfällt dieser Teil. Dort laufen
-  vorher Build und Tests, und deren Ausgabe hat kein Autor geschrieben.
+- **Uncommittet** (HEAD gegen Arbeitsverzeichnis, samt neuer Dateien): die
+  lokalen Regeln. Eine erweiterte Allowlist erscheint hier als Hinweis, eine
+  neue Suppression blockiert. In CI (`CI` gesetzt, ausser `false` und `0`)
+  entfällt dieser Teil. Dort laufen vorher Build und Tests, und deren Ausgabe
+  hat kein Autor geschrieben.
 
 Ein lokaler Lauf mit `--base` zeigt eine Änderung so schon vor dem Commit.
 Vorher meldete er «keine Umgehungsmuster», und erst nach dem Commit wurde der
 Check rot.
 
-Ohne `--base` und mit sauberem Arbeitsbaum gibt es nichts zu prüfen. Der Check
-meldet dann «nichts geprüft» statt grün. In CI trifft dieser Fall `quality full`
-ohne `--base`: dort prüft nur der eigene Tamper-Schritt mit `--base`.
+Ohne `--base` und mit sauberem Arbeitsverzeichnis gibt es nichts zu prüfen.
+Der Check meldet dann «nichts geprüft» statt grün. In CI trifft dieser Fall
+`quality full` ohne `--base`: dort prüft nur der eigene Tamper-Schritt mit
+`--base`.
 
 **Der Check läuft in CI bei beiden Ereignissen**, nicht nur beim Pull Request.
 Das ist seit v0.2.5 so, und der Grund ist unser eigener Arbeitsablauf:
