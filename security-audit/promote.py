@@ -308,23 +308,35 @@ def run_forwarding_signals(command: list) -> tuple:
     import subprocess
     import sys
 
-    try:
-        child = subprocess.Popen(command, close_fds=True)
-    except OSError as e:
-        print(f"promote.py: Befehl nicht startbar: {e}", file=sys.stderr)
-        return 127, None
     received = []
+    pending = []
+    child = None
 
-    def forward(signum, frame):
-        if not received:
-            received.append(signal.Signals(signum).name)
+    def send(signum):
         try:
             child.send_signal(signum)
         except ProcessLookupError:
             pass
 
+    def forward(signum, frame):
+        if not received:
+            received.append(signal.Signals(signum).name)
+        if child is None:
+            pending.append(signum)  # Kind läuft noch nicht. Nach dem Start weiterleiten.
+        else:
+            send(signum)
+
+    # Handler vor Popen setzen. Sonst beendet ein frühes Signal promote.py,
+    # und das Kind läuft ohne Weiterleitung weiter.
     old = {s: signal.signal(s, forward) for s in (signal.SIGINT, signal.SIGTERM)}
     try:
+        try:
+            child = subprocess.Popen(command, close_fds=True)
+        except OSError as e:
+            print(f"promote.py: Befehl nicht startbar: {e}", file=sys.stderr)
+            return 127, (received[0] if received else None)
+        for signum in pending:
+            send(signum)
         returncode = child.wait()
     finally:
         for s, handler in old.items():

@@ -188,6 +188,34 @@ prepare_sigterm_cleans_up() {
   [ ! -e "$AGENTS/sig" ] || fail "Agent-Root blieb nach SIGTERM liegen"
 }
 
+# Zwei prepare auf denselben leeren Agent-Root. Ein ls-Ersatz hält beide nach
+# der Leer-Prüfung an, bis beide sie bestanden haben. So trifft der Test das
+# Fenster zwischen Prüfung und Anlegen jedes Mal.
+prepare_concurrent_keeps_winner() {
+  local root="$AGENTS/race" bin="$BASE/race-bin" barrier="$BASE/race-barrier" pa pb rca=0 rcb=0
+  mkdir -p "$root" "$bin" "$barrier"
+  cat > "$bin/ls" <<EOF
+#!/bin/sh
+touch "$barrier/\$\$"
+i=0
+while [ "\$(/bin/ls "$barrier" | wc -l)" -lt 2 ] && [ "\$i" -lt 200 ]; do sleep 0.05; i=\$((i + 1)); done
+exec /bin/ls "\$@"
+EOF
+  chmod 755 "$bin/ls"
+  PATH="$bin:$PATH" "$SANDBOX" prepare --agent-root "$root" --target "$REPO" --scratch-size 32m >/dev/null 2>&1 &
+  pa=$!
+  PATH="$bin:$PATH" "$SANDBOX" prepare --agent-root "$root" --target "$REPO" --scratch-size 32m >/dev/null 2>&1 &
+  pb=$!
+  wait "$pa" || rca=$?
+  wait "$pb" || rcb=$?
+  rm -rf "$bin" "$barrier"
+  assert_eq 1 "$(( (rca == 0) + (rcb == 0) ))" "Anzahl Erfolge (Exit $rca und $rcb)"
+  assert_eq 91 "$(( rca + rcb ))" "Exit des Verlierers"
+  mount | grep -q " on $root/scratch " || fail "scratch/ des Gewinners ist nicht eingehängt"
+  [ -f "$root/src/app.php" ] || fail "src/ des Gewinners fehlt"
+  [ -d "$root/artifacts" ] || fail "artifacts/ des Gewinners fehlt"
+}
+
 prepare_refuses_missing_rw_before_mount() {
   assert_exit 91 prepare_agent fail --rw gibtsnicht
   if mount | grep -q "agents/fail/scratch"; then fail "scratch/ blieb eingehängt"; fi
@@ -254,6 +282,7 @@ run_case prepare_mirrors_rw_dirs
 run_case prepare_includes_extra_paths
 run_case prepare_rejects_include_outside_repo
 run_case prepare_skips_submodule_with_warning
+run_case prepare_concurrent_keeps_winner
 run_case prepare_refuses_missing_rw_before_mount
 run_case prepare_sigterm_cleans_up
 run_case prepare_refuses_comma_via_symlink

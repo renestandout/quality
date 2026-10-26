@@ -176,6 +176,12 @@ cmd_prepare() {
     done
   fi
 
+  # Die Leer-Prüfung oben ist nicht atomar. Ein mkdir ohne -p belegt den
+  # Agent-Root. Ein zweites prepare scheitert hier, bevor sein Trap greift.
+  # Sonst hängte dessen Trap das Image des ersten aus und löschte dessen Root.
+  mkdir -p "$root"
+  mkdir -m 0700 "$root/artifacts" 2>/dev/null || die 91 "Agent-Root ist schon belegt: $root"
+
   # Endet prepare ab hier vorzeitig, auch durch Ctrl-C oder SIGTERM, räumt der
   # Trap alles weg. Ein neuer Versuch auf demselben Agent-Root ist dann möglich.
   # Das Flag entscheidet, nicht $?: Bei SIGTERM wäre $? im EXIT-Trap 0.
@@ -186,8 +192,7 @@ cmd_prepare() {
 
   src="$root/src"
   scratch="$root/scratch"
-  mkdir -p "$src" "$scratch"
-  mkdir -m 0700 "$root/artifacts"
+  mkdir "$src" "$scratch"
 
   # Scratch: Image fester Grösse, der einzige beschreibbare Ort der Sandbox.
   hdiutil create -quiet -size "$size" -fs APFS -volname sa-scratch -type UDIF "$root/scratch.dmg"

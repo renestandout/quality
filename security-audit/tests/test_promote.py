@@ -351,6 +351,32 @@ class CliTest(Fixture):
         self.assertEqual(report["interrupted"], "SIGTERM")
         self.assertEqual(report["promoted"], [{"path": "out/a.txt", "bytes": 11}])
 
+    def test_signal_right_after_popen_is_forwarded(self) -> None:
+        import subprocess
+
+        # Das Signal trifft ein, sobald Popen zurückkehrt. Der eigene Handler des
+        # Tests steht für den Default, der promote.py sonst beenden würde.
+        lost = []
+        real_popen = subprocess.Popen
+
+        def popen_then_signal(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            os.kill(os.getpid(), signal.SIGTERM)
+            return child
+
+        # Ohne Weiterleitung endet das Kind nach 3 s mit Exit 0.
+        child = "import time; time.sleep(3)"
+        old = signal.signal(signal.SIGTERM, lambda n, f: lost.append(n))
+        subprocess.Popen = popen_then_signal
+        try:
+            returncode, interrupted = promote.run_forwarding_signals([sys.executable, "-c", child])
+        finally:
+            subprocess.Popen = real_popen
+            signal.signal(signal.SIGTERM, old)
+        self.assertEqual(lost, [], "Signal kam vor dem Handler von promote.py an")
+        self.assertEqual(interrupted, "SIGTERM")
+        self.assertEqual(returncode, -signal.SIGTERM)
+
     def test_open_roots_not_inheritable(self) -> None:
         s_fd, a_fd = promote.open_roots(self.scratch, self.artifacts)
         try:
