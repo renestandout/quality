@@ -1,6 +1,7 @@
 # Sandbox für den security-audit-Skill
 
 Stand: 2026-10-26. Status: Entwurf, wartet auf Renés Freigabe.
+Colima-Profil `audit` und Images sind eingerichtet (2026-10-26).
 
 ## Zweck
 
@@ -52,7 +53,9 @@ bestätigen oder verwerfen.
 ## Bestand auf dem Host (geprüft am 2026-10-26)
 
 - Docker 29.5.2 über **Colima**: vmType `vz`, Mount-Typ virtiofs, arm64,
-  Ubuntu 24.04, cgroup v2, 6 CPUs, 8 GB. Colima hängt nur `$HOME` ein.
+  Ubuntu 24.04, cgroup v2, 6 CPUs, 8 GB. Das Profil `default` hängt `$HOME`
+  beschreibbar ein. Die Sandbox nutzt ein eigenes Profil, siehe
+  «Vertrauensgrenze».
 - Lokale Images, alle arm64:
   - `ddev/ddev-webserver:v1.25.4-rankscan-built`: PHP 8.4, curl, `timeout`,
     Benutzer `nobody` (65534).
@@ -352,29 +355,43 @@ Die README erklärt:
    - Nachweis: Datum und Ergebnis des letzten Abnahmetests.
    - Regel: Zielcode nur über diese Befehle ausführen.
 
-## Offen: Vertrauensgrenze (Renés Entscheid)
+## Vertrauensgrenze: eigenes Colima-Profil (Renés Entscheid, Variante B)
 
-- Colima hängt das ganze `$HOME` beschreibbar in die VM. Geprüft am
-  2026-10-26: `virtiofs (rw)`, Schreibtest in `$HOME` aus der VM gelang.
-- Bricht Zielcode aus dem Container in die VM aus, erreicht er `~/.ssh`, die
-  echten `.env`-Dateien und die ddev-Container im selben Docker-Daemon.
-- Variante A: Die Grenze ist der Container. Der Entwurf bleibt, wie er ist.
-- Variante B: Ein eigenes Colima-Profil `audit` hängt nur
-  `~/security-audit-skill/` ein. Die Images kommen per `docker save | docker
-  load` dorthin, vor dem Lauf. Kosten: eine zweite VM, rund 3 GB Platz, mehr
-  Schritte in der README.
+Ausgangslage:
+- Das Profil `default` hängt das ganze `$HOME` beschreibbar in die VM.
+  Geprüft am 2026-10-26: `virtiofs (rw)`, Schreibtest in `$HOME` aus der VM
+  gelang.
+- Ein Ausbruch aus dem Container erreicht dort `~/.ssh`, die echten
+  `.env`-Dateien und die ddev-Container im selben Docker-Daemon.
+
+Entscheid: Die Sandbox läuft in einem eigenen Colima-Profil `audit`.
+- Das Profil hängt nur `~/security-audit-skill/` ein, beschreibbar. Sonst
+  nichts aus `$HOME`.
+- Ressourcen der VM: 4 CPUs, 4 GB, vmType `vz`, virtiofs.
+- Die VM läuft nur während eines Audits. Danach: `colima stop -p audit`.
+- Images kommen vor dem Lauf per `docker save` (Kontext `colima`) und
+  `docker load` (Kontext `colima-audit`). Das ist eine lokale Kopie, kein
+  Download. Während eines Laufs wird nichts geladen.
+- `sandbox-run.sh` nutzt immer `docker --context colima-audit`. Ist der
+  Kontext nicht erreichbar oder nicht das Profil `audit`, bricht das Skript ab.
+- Die Quellkopie `src/` und das Scratch-Image liegen unter dem Agent-Root in
+  `~/security-audit-skill/`. Sie sind damit in der VM sichtbar.
+- Zusätzlicher Abnahmefall: Aus dem Container und aus der VM ist kein Pfad
+  ausserhalb von `~/security-audit-skill/` sichtbar (z. B. `~/.ssh`).
+- Der Abnahme-Nachweis enthält zusätzlich die Mount-Liste des Profils.
 
 ## Unsicherheiten
 
 - Ob `--pids-limit`, `--memory-swap`, `--ulimit fsize` und der OOM-Killer
   unter Colima greifen, ist nicht geprüft. Der Abnahmetest entscheidet.
-- Schreibrechte auf virtiofs: In der Probe erschienen Dateien im Container als
-  root-eigen. Ob uid 65534 dort schreiben darf, ist offen. Mögliche Lösung:
-  Scratch-Ordner mit Modus 0777 anlegen. Der Abnahmetest zeigt es.
+- Geklärt am 2026-10-26 im Profil `audit`: Das hdiutil-Image unter
+  `~/security-audit-skill/` ist im Container sichtbar. uid 65534 schreibt,
+  wenn der Mountpunkt Modus 0777 hat. Das Disk-Limit greift (Stopp bei
+  14,5 MB von 16 MB). Auf dem Host gehören die Dateien danach uid 501.
 - Ob `--network container:<pg>` mit `--network none` beim Postgres-Container
   Loopback teilt, ist nicht geprüft.
-- Das Aushängen brauchte in der Probe `-force`. Ich vermute virtiofs als
-  Ursache.
+- Im Profil `default` brauchte das Aushängen `-force`, im Profil `audit` nicht
+  sicher. `cleanup` versucht zuerst `diskutil eject`, dann `-force`.
 
 ## Dem Builder überlassen
 
