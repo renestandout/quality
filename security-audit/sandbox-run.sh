@@ -2,6 +2,7 @@
 # Sandbox für den security-audit-Skill.
 #
 #   sandbox-run.sh prepare --agent-root DIR --target REPO [--scratch-size 512m] [--rw PATH]...
+#                          [--include PATH]...
 #   sandbox-run.sh exec --agent-root DIR --image IMG --env-file FILE [--pg IMG] [--redis IMG]
 #                       [--cpus N] [--memory SIZE] [--pids N] [--fsize SIZE] [--timeout SEK]
 #                       [--rw PATH]... [--workdir DIR] [--unverified-for-acceptance] -- BEFEHL...
@@ -35,7 +36,7 @@ is_denied() { # relativer-pfad
     case "$part" in .git | node_modules | .ddev) return 0 ;; esac
   done
   base="${1##*/}"
-  case "$base" in .env | .env.* | auth.json | *.key | *.pem) return 0 ;; esac
+  case "$base" in .env | .env.* | .envrc | auth.json | *.key | *.pem) return 0 ;; esac
   return 1
 }
 
@@ -59,9 +60,9 @@ check_agent_root() { # pfad
 
 check_rel_path() { # pfad
   case "/$1/" in
-    *"/../"* | *"/./"* | *"//"*) die 2 "--rw muss ein relativer Pfad ohne . und .. sein: $1" ;;
+    *"/../"* | *"/./"* | *"//"*) die 2 "Pfad muss relativ sein, ohne . und ..: $1" ;;
   esac
-  [[ "$1" != /* && -n "$1" ]] || die 2 "--rw muss ein relativer Pfad sein: $1"
+  [[ "$1" != /* && -n "$1" ]] || die 2 "Pfad muss relativ sein: $1"
 }
 
 agent_label() { # agent-root
@@ -73,29 +74,34 @@ is_mounted() { # pfad
 }
 
 # Listet die Dateien der Quellkopie, relativ zum Ziel-Repo, NUL-getrennt:
-# was Git kennt (versioniert oder neu und nicht ignoriert) plus vendor/.
-source_files() { # ziel
-  local f
+# was Git kennt (versioniert oder neu und nicht ignoriert), dazu vendor/ und
+# jeder weitere Pfad aus --include, auch wenn Git ihn ignoriert.
+source_files() { # ziel [include-pfad]...
+  local target="$1" f p
+  shift
   {
-    git -C "$1" ls-files -z --cached --others --exclude-standard
-    if [ -d "$1/vendor" ]; then
-      (cd "$1" && find vendor \( -type f -o -type l \) -print0)
-    fi
+    git -C "$target" ls-files -z --cached --others --exclude-standard
+    for p in vendor "$@"; do
+      if [ -e "$target/$p" ]; then
+        (cd "$target" && find "$p" \( -type f -o -type l \) -print0)
+      fi
+    done
   } | while IFS= read -r -d '' f; do
-    [ -e "$1/$f" ] || [ -L "$1/$f" ] || continue # gelöscht, aber noch versioniert
+    [ -e "$target/$f" ] || [ -L "$target/$f" ] || continue # gelöscht, aber noch versioniert
     is_denied "$f" && continue
     printf '%s\0' "$f"
   done
 }
 
 cmd_prepare() {
-  local agent_root="" target="" size="512m" rw=() root src scratch p d hit
+  local agent_root="" target="" size="512m" rw=() includes=() root src scratch p d hit
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent-root) agent_root="${2:-}"; shift 2 ;;
       --target) target="${2:-}"; shift 2 ;;
       --scratch-size) size="${2:-}"; shift 2 ;;
       --rw) check_rel_path "${2:-}"; rw+=("$2"); shift 2 ;;
+      --include) check_rel_path "${2:-}"; includes+=("$2"); shift 2 ;;
       *) die 2 "prepare: unbekannte Option $1" ;;
     esac
   done
@@ -132,8 +138,8 @@ cmd_prepare() {
   fi
 
   # Quellkopie: ohne ignorierte Dateien und ohne Denylist-Treffer.
-  source_files "$target" | (cd "$target" && tar --null -T - -cf -) | (cd "$src" && tar -xf -)
-  hit="$(cd "$src" && find . \( -name .git -o -name node_modules -o -name .ddev -o -name .env -o -name '.env.*' \
+  source_files "$target" ${includes[@]+"${includes[@]}"} | (cd "$target" && tar --null -T - -cf -) | (cd "$src" && tar -xf -)
+  hit="$(cd "$src" && find . \( -name .git -o -name node_modules -o -name .ddev -o -name .env -o -name '.env.*' -o -name .envrc \
     -o -name auth.json -o -name '*.key' -o -name '*.pem' \) -print | head -5)"
   if [ -n "$hit" ]; then
     cmd_cleanup --agent-root "$root" >/dev/null 2>&1 || true

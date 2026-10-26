@@ -17,7 +17,7 @@ make_repo() {
     cd "$REPO"
     git init -q
     printf '<?php\n' > app.php
-    printf 'ignored.txt\nstorage/*.key\n.env\n.env.*\n/vendor/\n' > .gitignore
+    printf 'ignored.txt\nstorage/*.key\n.env\n.env.*\n/vendor/\n/public/build/\n' > .gitignore
     : > storage/logs/.gitkeep
     git add app.php .gitignore storage/logs/.gitkeep
     git -c user.name=t -c user.email=t@example.invalid commit -q -m init
@@ -28,7 +28,13 @@ make_repo() {
     printf 'schluessel\n' > storage/oauth.key
     printf '<?php\n' > vendor/pkg/a.php
     printf 'X=1\n' > vendor/pkg/.env.example
+    printf 'export TOKEN=echt\n' > vendor/pkg/.envrc
+    printf 'export TOKEN=echt\n' > .envrc
     ln -s ../pkg/a.php vendor/bin/tool
+    mkdir -p public/build/assets
+    printf '{}' > public/build/manifest.json
+    printf 'x' > public/build/assets/app.js
+    printf 'geheim' > public/build/server.key
   )
 }
 
@@ -58,7 +64,7 @@ prepare_copies_tracked_untracked_and_vendor() {
 prepare_excludes_ignored_and_secrets() {
   local src="$AGENTS/copy/src" f
   [ -f "$src/app.php" ] || fail "src/ fehlt"
-  for f in ignored.txt .env .env.testing storage/oauth.key vendor/pkg/.env.example .git; do
+  for f in ignored.txt .env .env.testing .envrc storage/oauth.key vendor/pkg/.env.example vendor/pkg/.envrc .git; do
     [ ! -e "$src/$f" ] || fail "$f darf nicht in src/ liegen"
   done
 }
@@ -86,6 +92,19 @@ prepare_mirrors_rw_dirs() {
   local rw="$AGENTS/rwdirs/scratch/rw/storage"
   [ -d "$rw/logs" ] || fail "scratch/rw/storage/logs fehlt"
   assert_eq "" "$(find "$rw" -type f)" "Dateien in scratch/rw/storage"
+}
+
+prepare_includes_extra_paths() {
+  prepare_agent incl --include public/build >/dev/null
+  local src="$AGENTS/incl/src"
+  [ -f "$src/public/build/manifest.json" ] || fail "public/build/manifest.json fehlt"
+  [ -f "$src/public/build/assets/app.js" ] || fail "public/build/assets/app.js fehlt"
+  [ ! -e "$src/public/build/server.key" ] || fail "Denylist gilt nicht für --include"
+  [ ! -e "$AGENTS/copy/src/public/build" ] || fail "public/build ohne --include kopiert"
+}
+
+prepare_rejects_include_outside_repo() {
+  assert_exit 2 prepare_agent inclbad --include ../x
 }
 
 prepare_refuses_outside_audit_root() {
@@ -127,6 +146,8 @@ run_case prepare_excludes_ignored_and_secrets
 run_case prepare_creates_scratch_image_with_limit
 run_case prepare_writes_source_ref
 run_case prepare_mirrors_rw_dirs
+run_case prepare_includes_extra_paths
+run_case prepare_rejects_include_outside_repo
 run_case prepare_refuses_outside_audit_root
 run_case prepare_refuses_bad_agent_id
 run_case prepare_refuses_second_run
