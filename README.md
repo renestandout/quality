@@ -448,13 +448,13 @@ gefälschten Adresse also Dependabot. GitHub signiert einen Commit aber nur,
 wenn der Autor auch der ist, der ihn erzeugt. Ein Experiment vom 2026-10-26 in
 einem Wegwerf-Repository hat das bestätigt:
 
-| Weg | `author.login` | Committer | verified |
-|---|---|---|---|
-| Echter Dependabot-Commit | dependabot[bot] | web-flow | ja |
-| Contents-API mit User-Token, Autor Dependabot | dependabot[bot] | Mensch | nein |
-| dito, Committer «GitHub <noreply@github.com>» gesetzt | dependabot[bot] | web-flow | nein |
-| Workflow mit `GITHUB_TOKEN`, Autor Dependabot | dependabot[bot] | github-actions[bot] | nein |
-| Workflow mit `GITHUB_TOKEN`, ohne Autor | github-actions[bot] | web-flow | ja |
+| Weg                                                   | `author.login`      | Committer           | verified |
+| ----------------------------------------------------- | ------------------- | ------------------- | -------- |
+| Echter Dependabot-Commit                              | dependabot[bot]     | web-flow            | ja       |
+| Contents-API mit User-Token, Autor Dependabot         | dependabot[bot]     | Mensch              | nein     |
+| dito, Committer «GitHub <noreply@github.com>» gesetzt | dependabot[bot]     | web-flow            | nein     |
+| Workflow mit `GITHUB_TOKEN`, Autor Dependabot         | dependabot[bot]     | github-actions[bot] | nein     |
+| Workflow mit `GITHUB_TOKEN`, ohne Autor               | github-actions[bot] | web-flow            | ja       |
 
 Die letzte Zeile erklärt die feste Liste der Bots. Einen signierten Commit von
 `github-actions[bot]` erzeugt jeder, der einen Workflow pushen darf.

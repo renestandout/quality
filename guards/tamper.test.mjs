@@ -1795,7 +1795,10 @@ for (const [label, change] of /** @type {const} */ ([
     const { root, base } = botMergeFixture()
     const commitOf = () => ({ ...signedBotCommit(), ...change })
     try {
-      assert.equal(asHumanActor(() => runTamper({ root, base, quiet: true, commitOf })), 1)
+      assert.equal(
+        asHumanActor(() => runTamper({ root, base, quiet: true, commitOf })),
+        1,
+      )
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
