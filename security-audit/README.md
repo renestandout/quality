@@ -88,7 +88,8 @@ Der Agent-Root folgt dem Skill:
    - Legt `scratch.dmg` fester Grösse an und hängt es unter `scratch/` ein.
    - Kopiert nach `src/`, was Git kennt (versioniert oder neu und nicht
      ignoriert), dazu `vendor/` und jeden Pfad aus `--include`.
-   - Lässt immer weg: `.git/`, `node_modules/`, `.ddev/`, `.ssh/`, `.aws/`,
+   - Lässt immer weg, geprüft an jedem Pfadteil (ein Ordner `prod.env/` fällt
+     samt Inhalt weg), mit einem Hinweis auf stderr: `.git/`, `node_modules/`, `.ddev/`, `.ssh/`, `.aws/`,
      `.env`, `.env.*`, `.env-*`, `*.env`, `.envrc`, `auth.json`, `.npmrc`,
      `.netrc`, `.pgpass`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `id_rsa*`,
      `id_ecdsa*`, `id_ed25519*`, `id_dsa*`.
@@ -123,8 +124,9 @@ Der Agent-Root folgt dem Skill:
    übernommen. Exit 1: mindestens eine Datei abgelehnt. Exit 3: ein Container
    lief noch, nichts übernommen.
 
-   `--container-label` ist Pflicht. Nur Tests ohne Docker nutzen stattdessen
-   `--no-container-check`. Ctrl-C und SIGTERM gibt `promote.py` an `exec`
+   `--container-label` ist Pflicht und muss die Form
+   `security-audit.agent=<12 Hex-Zeichen>` haben, wie `sandbox-run.sh label` sie
+   ausgibt. Nur Tests ohne Docker nutzen stattdessen `--no-container-check`. Ctrl-C und SIGTERM gibt `promote.py` an `exec`
    weiter und wartet, bis `exec` die Container entfernt hat.
 
 4. Aufräumen: `security-audit/sandbox-run.sh cleanup --agent-root "$ROOT"`.
@@ -145,7 +147,7 @@ Ein vollständiges Beispiel ist `tests/probe-rankscan.sh`.
 | Kontrolle | Umsetzung | Default | Option |
 |---|---|---|---|
 | Netz | Test-Container im Netz-Namespace von Postgres (`--network none`), sonst `--network none`; nur `lo` | – | – |
-| Umgebung | `env -i` mit genau den Schlüsseln aus `--env-file`; `PATH`, `HOME`, `TMPDIR` Pflicht; `HOME`, `TMPDIR`, `XDG_*`, `COMPOSER_HOME`, `COMPOSER_CACHE_DIR` müssen auf `/scratch` zeigen | – | `--env-file` |
+| Umgebung | `env -i` mit genau den Schlüsseln aus `--env-file`; `PATH`, `HOME`, `TMPDIR` Pflicht; `HOME`, `TMPDIR`, `XDG_*`, `COMPOSER_HOME`, `COMPOSER_CACHE_DIR` müssen auf `/scratch` zeigen, ohne `.` und `..` | – | `--env-file` |
 | Dateisystem | `--read-only`, `src/` als `/src:ro`, einziger Schreibort `/scratch` | – | `--rw` |
 | CPU | `--cpus` | 2 | `--cpus` |
 | Speicher | `--memory`, Swap gleich Speicher | 1 GB | `--memory` |
@@ -160,8 +162,11 @@ Dummy-Zugang `db`/`db`, Datenbank `db_test`.
 
 `exec` gibt den Exit-Code des Befehls zurück. Eigene Codes: `90` Aufruffehler,
 `91` Vorbedingung verweigert (Nachweis, VM, Pfad, Denylist, Symlink in
-`scratch/rw/`). `124`: Zeitlimit. `prepare` und `cleanup` nutzen dieselben
-Codes. Die hohen Werte verhindern eine Verwechslung mit Codes des Zielcodes.
+`scratch/rw/`). `124`: Zeitlimit. `prepare`, `cleanup` und `label` nutzen
+dieselben Codes. Jeder eigene Abbruch schreibt zusätzlich eine Zeile
+`sandbox-run.sh: VERWEIGERT: …` bzw. `sandbox-run.sh: AUFRUFFEHLER: …` auf
+stderr. Erst Code und Zeile zusammen belegen einen Abbruch der Sandbox. Ein
+Zielbefehl kann selbst mit 90 oder 91 enden.
 
 Vor jedem Mount prüft `exec`, dass kein Teil von `scratch/rw/<pfad>` ein
 Symlink ist. Zielcode aus einem früheren Lauf könnte dort sonst einen Symlink
@@ -194,9 +199,11 @@ Erfüllte Kontrollen (Abnahmetest grün am <Datum>, 20 Fälle):
 Regeln:
 - Nur der Parent ruft prepare, exec, cleanup und promote.py auf und schreibt das Manifest.
 - Hunter und Verifier schreiben nur nach scratch/input/.
-- Verweigert exec den Lauf (command_exit 90 oder 91 im Bericht von promote.py),
-  führe keinen Zielcode aus. Melde die Spur als needs_validation mit der
-  Meldung von exec als Blocker.
+- Verweigert exec den Lauf, führe keinen Zielcode aus. Erkennbar an
+  command_exit 90 oder 91 im Bericht von promote.py UND an einer stderr-Zeile
+  «sandbox-run.sh: VERWEIGERT: …» oder «sandbox-run.sh: AUFRUFFEHLER: …».
+  Ohne diese Zeile stammt der Exit-Code vom Zielbefehl. Melde die Spur als
+  needs_validation mit der Meldung von exec als Blocker.
 - Ergebnisse nur aus artifacts/ lesen. Dateien in scratch/ nie öffnen oder
   lesen; nur nach scratch/input/ schreiben.
 ```

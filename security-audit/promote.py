@@ -11,6 +11,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import stat
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -101,7 +102,7 @@ def _open_source_dir(parent_fd: int, name: str, rel: str) -> int:
             st = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             code = "symlink" if stat.S_ISLNK(st.st_mode) else "not-dir"
             raise PromoteError(f"{code}: {rel}: {name}") from None
-        raise PromoteError(f"not-dir: {rel}: {name}: {e.strerror}") from None
+        raise PromoteError(f"io-error: {rel}: {name}: {errno.errorcode.get(e.errno, e.errno)} {e.strerror}") from None
 
 
 def _walk_source(scratch_fd: int, parts: list, rel: str) -> int:
@@ -130,7 +131,9 @@ def _walk_dest(artifacts_fd: int, parts: list) -> int:
             try:
                 nxt = os.open(name, DIR_FLAGS, dir_fd=fd)
             except OSError as e:
-                raise PromoteError(f"dest-not-dir: {name}: {e.strerror}") from None
+                if e.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise PromoteError(f"dest-not-dir: {name}") from None
+                raise PromoteError(f"io-error: {name}: {errno.errorcode.get(e.errno, e.errno)} {e.strerror}") from None
             if not stat.S_ISDIR(os.fstat(nxt).st_mode):
                 os.close(nxt)
                 raise PromoteError(f"dest-not-dir: {name}")
@@ -188,7 +191,7 @@ def promote_file(
                 raise PromoteError(f"missing: {entry.path}") from None
             if e.errno == errno.ELOOP:
                 raise PromoteError(f"symlink: {entry.path}") from None
-            raise PromoteError(f"not-regular: {entry.path}: {e.strerror}") from None
+            raise PromoteError(f"io-error: {entry.path}: {errno.errorcode.get(e.errno, e.errno)} {e.strerror}") from None
     finally:
         os.close(src_dir)
 
@@ -226,7 +229,9 @@ def promote_file(
         except FileExistsError:
             raise PromoteError(f"dest-exists: {entry.path}") from None
         except OSError as e:
-            raise PromoteError(f"dest-not-dir: {entry.path}: {e.strerror}") from None
+            if e.errno == errno.ELOOP:
+                raise PromoteError(f"dest-not-dir: {entry.path} ist ein Symlink") from None
+            raise PromoteError(f"io-error: {entry.path}: {errno.errorcode.get(e.errno, e.errno)} {e.strerror}") from None
         try:
             st = os.fstat(dest)
             if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
@@ -346,6 +351,10 @@ def main(argv: Optional[list] = None) -> int:
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         parser.error("Befehl nach -- fehlt")
+    # Nur ein vollständiges Label trifft die Container. Ein blosser Hash als
+    # Filter träfe nie, und die Prüfung bestünde immer.
+    if args.container_label is not None and not re.fullmatch(r"security-audit\.agent=[0-9a-f]{12}", args.container_label):
+        parser.error("--container-label muss security-audit.agent=<12 Hex-Zeichen> sein; Wert von «sandbox-run.sh label»")
 
     try:
         manifest = load_manifest(args.manifest)

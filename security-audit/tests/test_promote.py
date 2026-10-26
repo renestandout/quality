@@ -190,6 +190,17 @@ class IoErrorTest(Fixture):
         results = promote.promote_all(self.scratch_fd, self.artifacts_fd, manifest)
         self.assertEqual([r.status for r in results], ["rejected", "rejected"])
         self.assertTrue(results[0].reason.startswith("io-error:"), results[0].reason)
+        self.assertTrue(results[1].reason.startswith("io-error:"), results[1].reason)
+
+    def test_unreadable_source_dir_is_io_error(self) -> None:
+        self.write("out/sub/a.txt", b"x")
+        os.chmod(os.path.join(self.scratch, "out/sub"), 0)
+        try:
+            results = promote.promote_all(self.scratch_fd, self.artifacts_fd, Manifest((Entry("out/sub/a.txt", 10),), 10))
+        finally:
+            os.chmod(os.path.join(self.scratch, "out/sub"), 0o700)
+        self.assertTrue(results[0].reason.startswith("io-error:"), results[0].reason)
+        self.assertIn("EACCES", results[0].reason)
 
 
 class ManifestTest(Fixture):
@@ -297,6 +308,13 @@ class CliTest(Fixture):
             self.assertTrue(promote.containers_left("security-audit.agent=x"))
         finally:
             os.environ["PATH"] = old
+
+    def test_cli_rejects_malformed_label(self) -> None:
+        for label in ("abc123def456", "security-audit.agent=", "security-audit.agent=xyz", "foo=abc123def456"):
+            with self.subTest(label=label):
+                rc, _ = self.run_cli(*self.writer(), label=("--container-label", label))
+                self.assertEqual(rc, 2)
+                self.assertFalse(os.path.exists(os.path.join(self.scratch, "out", "a.txt")), "Befehl lief trotzdem")
 
     def test_cli_requires_container_check_choice(self) -> None:
         rc, _ = self.run_cli(*self.writer(), label=())

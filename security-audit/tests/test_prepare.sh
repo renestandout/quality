@@ -35,6 +35,10 @@ make_repo() {
     printf 'X=1\n' > vendor/pkg/.env.example
     printf 'export TOKEN=echt\n' > vendor/pkg/.envrc
     printf 'export TOKEN=echt\n' > .envrc
+    mkdir -p docker/prod.env tests/fixtures/id_rsa_keys
+    printf 'services: {}\n' > docker/prod.env/compose.yml
+    printf 'x\n' > tests/fixtures/id_rsa_keys/readme.txt
+    git add docker tests
     mkdir -p .ssh .aws conf
     for f in .npmrc .netrc .pgpass id_rsa id_ed25519 .ssh/config .aws/credentials conf/cert.p12 conf/cert.pfx \
       conf/prod.env .env-local; do printf 'geheim\n' > "$f"; done
@@ -67,6 +71,20 @@ prepare_copies_tracked_untracked_and_vendor() {
   [ -f "$src/new.php" ] || fail "new.php fehlt"
   [ -f "$src/vendor/pkg/a.php" ] || fail "vendor/pkg/a.php fehlt"
   [ -L "$src/vendor/bin/tool" ] || fail "vendor/bin/tool ist kein Symlink"
+}
+
+prepare_excludes_dirs_with_secret_names() {
+  local src="$AGENTS/copy/src"
+  [ -f "$src/app.php" ] || fail "src/ fehlt"
+  [ ! -e "$src/docker/prod.env" ] || fail "Ordner prod.env wurde kopiert"
+  [ ! -e "$src/tests/fixtures/id_rsa_keys" ] || fail "Ordner id_rsa_keys wurde kopiert"
+}
+
+prepare_reports_denylist_skips() {
+  local err
+  err="$(prepare_agent deny 2>&1 >/dev/null)"
+  assert_contains "$err" "Denylist"
+  assert_contains "$err" ".npmrc"
 }
 
 prepare_excludes_ignored_and_secrets() {
@@ -135,7 +153,42 @@ prepare_skips_submodule_with_warning() {
   assert_contains "$err" "--include"
 }
 
-prepare_failure_leaves_nothing_mounted() {
+label_refuses_invalid_root() {
+  local out rc=0
+  out="$("$SANDBOX" label --agent-root "$HOME/sa-ausserhalb/agents/a" 2>/dev/null)" || rc=$?
+  assert_eq 91 "$rc" "Exit von label"
+  assert_eq "" "$out" "Ausgabe von label"
+}
+
+prepare_refuses_comma_via_symlink() {
+  mkdir -p "$BASE/run,x"
+  ln -sfn "$BASE/run,x" "$BASE/linkroot"
+  assert_exit 91 "$SANDBOX" prepare --agent-root "$BASE/linkroot/a" --target "$REPO"
+  [ ! -e "$BASE/run,x/a" ] || fail "Agent-Root hinter dem Symlink wurde angelegt"
+  rm -rf "$BASE/linkroot" "$BASE/run,x"
+}
+
+prepare_sigterm_cleans_up() {
+  local pid i=0
+  # Grosse Datei, damit die Kopie nach dem Einhängen Zeit braucht.
+  mkdir -p "$REPO/gross"
+  dd if=/dev/zero of="$REPO/gross/blob" bs=1m count=600 2>/dev/null
+  # Direkt starten: $! muss die PID von sandbox-run.sh sein, nicht einer Subshell.
+  "$SANDBOX" prepare --agent-root "$AGENTS/sig" --target "$REPO" --scratch-size 32m --include gross >/dev/null 2>&1 &
+  pid=$!
+  until mount | grep -q "agents/sig/scratch"; do
+    i=$((i + 1))
+    [ "$i" -lt 200 ] || break
+    sleep 0.05
+  done
+  kill -TERM "$pid"
+  wait "$pid" 2>/dev/null || true
+  rm -rf "$REPO/gross"
+  if mount | grep -q "agents/sig/scratch"; then fail "scratch/ blieb nach SIGTERM eingehängt"; fi
+  [ ! -e "$AGENTS/sig" ] || fail "Agent-Root blieb nach SIGTERM liegen"
+}
+
+prepare_refuses_missing_rw_before_mount() {
   assert_exit 91 prepare_agent fail --rw gibtsnicht
   if mount | grep -q "agents/fail/scratch"; then fail "scratch/ blieb eingehängt"; fi
   prepare_agent fail >/dev/null || fail "zweiter Versuch scheiterte"
@@ -201,7 +254,12 @@ run_case prepare_mirrors_rw_dirs
 run_case prepare_includes_extra_paths
 run_case prepare_rejects_include_outside_repo
 run_case prepare_skips_submodule_with_warning
-run_case prepare_failure_leaves_nothing_mounted
+run_case prepare_refuses_missing_rw_before_mount
+run_case prepare_sigterm_cleans_up
+run_case prepare_refuses_comma_via_symlink
+run_case label_refuses_invalid_root
+run_case prepare_excludes_dirs_with_secret_names
+run_case prepare_reports_denylist_skips
 run_case prepare_failure_after_mount_cleans_up
 run_case prepare_refuses_comma_or_quote_in_root
 run_case label_is_canonical

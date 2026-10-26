@@ -64,6 +64,7 @@ guard_refuses_without_proof() {
   finish_agent "$root"
   assert_eq 91 "$rc" "Exit ohne Nachweis"
   assert_contains "$out" "Nachweis"
+  assert_contains "$out" "sandbox-run.sh: VERWEIGERT:"
 }
 
 network_external_blocked() {
@@ -114,15 +115,20 @@ env_only_allowlist() {
 }
 
 env_paths_must_point_to_scratch() {
-  local root out rc=0 bad="$ACC/env-falsch.env"
+  local root out rc bad="$ACC/env-falsch.env" line key
   root="$(agent envpath)"
-  sed 's|^HOME=.*|HOME=/home/x|' "$ENV_FILE" > "$bad"
-  out="$("$SANDBOX" exec --agent-root "$root" --image "$IMAGE" --env-file "$bad" \
-    --unverified-for-acceptance -- true 2>&1)" || rc=$?
+  for line in HOME=/home/x HOME=/scratch/../x TMPDIR=/scratch/. XDG_STATE_HOME=/home/x XDG_RUNTIME_DIR=/run/x; do
+    key="${line%%=*}"
+    { grep -v "^$key=" "$ENV_FILE"; echo "$line"; } > "$bad"
+    rc=0
+    out="$("$SANDBOX" exec --agent-root "$root" --image "$IMAGE" --env-file "$bad" \
+      --unverified-for-acceptance -- true 2>&1)" || rc=$?
+    assert_eq 90 "$rc" "Exit bei $line"
+    assert_contains "$out" "$key"
+    assert_contains "$out" "AUFRUFFEHLER"
+  done
   rm -f "$bad"
   finish_agent "$root"
-  assert_eq 90 "$rc" "Exit bei HOME ausserhalb von /scratch"
-  assert_contains "$out" "HOME"
 }
 
 # Leerzeichen und Umlaut im Pfad des Agent-Roots, mit --rw-Mount.
@@ -304,6 +310,17 @@ rw_symlink_refused() {
   finish_agent "$root"
   assert_eq 91 "$rc" "Exit bei Symlink in scratch/rw"
   assert_contains "$out" "Symlink"
+
+  # Variante: scratch/rw selbst wird zum Symlink.
+  rm -rf "$root"
+  "$SANDBOX" prepare --agent-root "$root" --target "$REPO" --scratch-size 64m --rw data >/dev/null
+  sx "$root" --rw data -- sh -c 'mv /scratch/rw /scratch/rw.alt && ln -s / /scratch/rw' >/dev/null
+  [ -L "$root/scratch/rw" ] || fail "Symlink scratch/rw wurde nicht angelegt"
+  rc=0
+  out="$("$SANDBOX" exec --agent-root "$root" --image "$IMAGE" --env-file "$ENV_FILE" \
+    --unverified-for-acceptance --rw data -- ls /src/data 2>&1)" || rc=$?
+  finish_agent "$root"
+  assert_eq 91 "$rc" "Exit bei Symlink scratch/rw"
 }
 
 cleanup_after_sigterm() {

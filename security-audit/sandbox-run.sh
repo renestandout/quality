@@ -23,8 +23,15 @@ SCRATCH_DIRS="home tmp cache input out rw"
 ACCEPTANCE_FILE="${SANDBOX_ACCEPTANCE_FILE:-$AUDIT_ROOT/.sandbox-acceptance.json}"
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
+# Eigene Abbrüche tragen eine Marke. So lassen sie sich von einem Zielbefehl
+# unterscheiden, der zufällig mit 90 oder 91 endet.
 die() { # code meldung
-  echo "sandbox-run.sh: $2" >&2
+  local tag=""
+  case "$1" in
+    90) tag="AUFRUFFEHLER: " ;;
+    91) tag="VERWEIGERT: " ;;
+  esac
+  echo "sandbox-run.sh: $tag$2" >&2
   exit "$1"
 }
 
@@ -32,17 +39,22 @@ realpath_py() {
   python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"
 }
 
-# Pfadteile, die nie in die Quellkopie gelangen. Gilt für jede Tiefe.
+# Namen, die nie in die Quellkopie gelangen. Jeder Pfadteil wird geprüft, auch
+# Ordner: Ein Ordner «prod.env/» fällt samt Inhalt weg.
 is_denied() { # relativer-pfad
-  local IFS=/ part base
+  local IFS=/ part
+  set -f # Pfadteile aus dem Ziel-Repo nicht als Glob auflösen.
   for part in $1; do
-    case "$part" in .git | node_modules | .ddev | .ssh | .aws) return 0 ;; esac
+    case "$part" in
+      .git | node_modules | .ddev | .ssh | .aws | \
+        .env | .env.* | .env-* | *.env | .envrc | auth.json | .npmrc | .netrc | .pgpass | \
+        *.key | *.pem | *.p12 | *.pfx | id_rsa* | id_ecdsa* | id_ed25519* | id_dsa*)
+        set +f
+        return 0
+        ;;
+    esac
   done
-  base="${1##*/}"
-  case "$base" in
-    .env | .env.* | .env-* | *.env | .envrc | auth.json | .npmrc | .netrc | .pgpass) return 0 ;;
-    *.key | *.pem | *.p12 | *.pfx | id_rsa* | id_ecdsa* | id_ed25519* | id_dsa*) return 0 ;;
-  esac
+  set +f
   return 1
 }
 
@@ -60,6 +72,7 @@ check_agent_root() { # pfad
   # Komma und Anführungszeichen brechen die Optionen von docker --mount.
   [[ "$1" != *[,\"]* ]] || die 91 "--agent-root darf kein Komma und kein Anführungszeichen enthalten: $1"
   root="$(realpath_py "$1")"
+  [[ "$root" != *[,\"]* ]] || die 91 "Agent-Root darf kein Komma und kein Anführungszeichen enthalten: $root"
   audit="$(realpath_py "$AUDIT_ROOT")"
   [[ "$root" = "$audit"/?* ]] || die 91 "--agent-root muss unter $AUDIT_ROOT liegen: $1"
   valid_agent_id "$(basename "$root")" || die 91 "ungültige Agent-ID: $(basename "$root")"
@@ -78,11 +91,13 @@ check_rel_path() { # pfad
 # Bind-Mount folgen.
 check_no_symlink() { # base rel
   local path="$1" part IFS=/
+  set -f
   for part in $2; do
     path="$path/$part"
     [ ! -L "$path" ] || die 91 "Symlink in scratch/, Lauf verweigert: $path"
     [ -d "$path" ] || die 91 "kein Ordner: $path"
   done
+  set +f
 }
 
 agent_label() { # agent-root
@@ -106,16 +121,26 @@ source_files() { # ziel [include-pfad]...
         (cd "$target" && find "$p" \( -type f -o -type l \) -print0)
       fi
     done
-  } | while IFS= read -r -d '' f; do
-    [ -e "$target/$f" ] || [ -L "$target/$f" ] || continue # gelöscht, aber noch versioniert
-    if [ -d "$target/$f" ] && [ ! -L "$target/$f" ]; then
-      # Ein Ordner in ls-files ist ein Submodul oder eingebettetes Repo.
-      echo "sandbox-run.sh: Hinweis: $f ist ein Submodul und fehlt in src/. Bei Bedarf mit --include $f übernehmen." >&2
-      continue
+  } | {
+    local n=0 shown=""
+    while IFS= read -r -d '' f; do
+      [ -e "$target/$f" ] || [ -L "$target/$f" ] || continue # gelöscht, aber noch versioniert
+      if [ -d "$target/$f" ] && [ ! -L "$target/$f" ]; then
+        # Ein Ordner in ls-files ist ein Submodul oder eingebettetes Repo.
+        echo "sandbox-run.sh: Hinweis: $f ist ein Submodul und fehlt in src/. Bei Bedarf mit --include $f übernehmen." >&2
+        continue
+      fi
+      if is_denied "$f"; then
+        n=$((n + 1))
+        [ "$n" -gt 10 ] || shown="$shown $f"
+        continue
+      fi
+      printf '%s\0' "$f"
+    done
+    if [ "$n" -gt 0 ]; then
+      echo "sandbox-run.sh: Hinweis: $n Dateien wegen der Denylist ausgelassen:$shown$([ "$n" -le 10 ] || echo " …")" >&2
     fi
-    is_denied "$f" && continue
-    printf '%s\0' "$f"
-  done
+  }
 }
 
 cmd_prepare() {
@@ -151,9 +176,13 @@ cmd_prepare() {
     done
   fi
 
-  # Scheitert prepare ab hier, räumt der Trap alles weg. Ein neuer Versuch auf
-  # demselben Agent-Root ist dann möglich.
-  trap 'rc=$?; if [ "$rc" -ne 0 ]; then cmd_cleanup --agent-root "$root" >/dev/null 2>&1; rm -rf "$root"; fi' EXIT
+  # Endet prepare ab hier vorzeitig, auch durch Ctrl-C oder SIGTERM, räumt der
+  # Trap alles weg. Ein neuer Versuch auf demselben Agent-Root ist dann möglich.
+  # Das Flag entscheidet, nicht $?: Bei SIGTERM wäre $? im EXIT-Trap 0.
+  PREPARED=0
+  trap 'if [ "$PREPARED" != 1 ]; then cmd_cleanup --agent-root "$root" >/dev/null 2>&1; rm -rf "$root"; fi' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   src="$root/src"
   scratch="$root/scratch"
@@ -190,6 +219,7 @@ import json, sys
 print(json.dumps({"commit": sys.argv[1], "dirty": sys.argv[2] != "", "target": sys.argv[3]}))
 ' "$(git -C "$target" rev-parse HEAD)" "$(git -C "$target" status --porcelain | head -1)" "$target" >"$root/src.ref.json"
 
+  PREPARED=1
   echo "prepare: $root"
 }
 
@@ -246,6 +276,7 @@ WATCHDOG=""
 
 stop_watchdog() {
   [ -z "$WATCHDOG" ] || kill "$WATCHDOG" 2>/dev/null || true
+  WATCHDOG=""
 }
 
 remove_containers() { # label
@@ -256,7 +287,7 @@ remove_containers() { # label
 
 cmd_exec() {
   local agent_root="" image="" env_file="" pg="" redis="" cpus=2 memory=1g pids=256 fsize=64m timeout=300
-  local workdir=/src unverified=0 rw=() root label fp mismatch line key envs=() keys=" " p
+  local workdir=/src unverified=0 rw=() root label fp mismatch line key value envs=() keys=" " p
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent-root) agent_root="${2:-}"; shift 2 ;;
@@ -285,7 +316,6 @@ cmd_exec() {
   fsize="$(to_bytes "$fsize")"
 
   root="$(check_agent_root "$agent_root")"
-  [[ "$root" != *,* ]] || die 91 "Agent-Root darf kein Komma enthalten (docker --mount)"
   is_mounted "$root/scratch" || die 91 "scratch/ ist nicht eingehängt. Zuerst «prepare» aufrufen."
   [ -d "$root/src" ] || die 91 "src/ fehlt. Zuerst «prepare» aufrufen."
 
@@ -317,9 +347,10 @@ raise SystemExit(0 if mounts == [sys.argv[2]] else 1)
     key="${line%%=*}"
     [[ "$line" = *=* && "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || die 90 "env-file: ungültige Zeile: $line"
     case "$key" in
-      HOME | TMPDIR | XDG_CACHE_HOME | XDG_CONFIG_HOME | XDG_DATA_HOME | COMPOSER_HOME | COMPOSER_CACHE_DIR)
-        [[ "${line#*=}" = /scratch || "${line#*=}" = /scratch/* ]] ||
-          die 90 "env-file: $key muss auf /scratch zeigen: ${line#*=}"
+      HOME | TMPDIR | XDG_* | COMPOSER_HOME | COMPOSER_CACHE_DIR)
+        value="${line#*=}"
+        [[ ("$value" = /scratch || "$value" = /scratch/*) && "/$value/" != *"/../"* && "/$value/" != *"/./"* ]] ||
+          die 90 "env-file: $key muss auf /scratch zeigen, ohne . und ..: $value"
         ;;
     esac
     envs+=("$line")
@@ -397,8 +428,11 @@ raise SystemExit(0 if mounts == [sys.argv[2]] else 1)
 }
 
 cmd_label() {
+  local root
   [ "${1:-}" = "--agent-root" ] && [ -n "${2:-}" ] || die 90 "label braucht --agent-root"
-  echo "security-audit.agent=$(agent_label "$(check_agent_root "$2")")"
+  # Eigene Zuweisung: Ein Fehler in $(…) innerhalb von echo löst set -e nicht aus.
+  root="$(check_agent_root "$2")"
+  echo "security-audit.agent=$(agent_label "$root")"
 }
 
 cmd_cleanup() {
