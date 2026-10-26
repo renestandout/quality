@@ -420,29 +420,53 @@ keinen Stand davor (`github.event.before` ist dann der Null-SHA); der Check
 der Stand davor nicht mehr — dann bricht der Check mit einer Meldung ab und der
 Lauf wird rot. Das ist Absicht: ein Force-Push auf `main` soll auffallen.
 
-### Bot-Ausnahme: nur bestätigte Identitäten
+### Bot-Ausnahme: nur von GitHub signierte Bot-Commits
 
-Ein Bot-Diff (Renovate, Dependabot) darf Lockfiles und CI-Workflows ändern.
+Ein Bot-Diff (Dependabot, Renovate) darf Lockfiles und CI-Workflows ändern.
 Sonst wäre jeder Versions-PR rot. Der Git-Autor allein reicht dafür nicht: ihn
 setzt jeder selbst, etwa mit `git commit --author='dependabot[bot] <…>'`. Der
-Git-Autor ist deshalb nur die Vorbedingung. Alle Commits im Bereich müssen
-einen Bot nennen, und GitHub muss die Bot-Identität bestätigen:
+Git-Autor ist deshalb nur die Vorbedingung. Danach fragt der Check für jeden
+Commit im Bereich die GitHub-API (`GET /repos/{r}/commits/{sha}`). Jeder Commit
+muss drei Bedingungen erfüllen:
 
-- **PR-Lauf eines Bots:** `GITHUB_ACTOR` ist der Bot.
-- **PR-Lauf, den ein Mensch auslöst** (etwa «Update branch»): Der PR-Autor aus
-  der Ereignisdatei (`GITHUB_EVENT_PATH`) ist ein Bot.
-- **Push-Lauf nach dem Merge:** Jeder Commit gehört zu einem gemergten PR eines
-  Bots. Das fragt der Check über die GitHub-API ab. Der Schritt braucht dafür
-  `GITHUB_TOKEN` und das Recht `pull-requests: read`.
+- `verification.verified` ist wahr und `verification.reason` ist `valid`.
+- Der Committer ist `web-flow`. Mit diesem Login signiert GitHub.
+- `author.login` ist `dependabot[bot]` oder `renovate[bot]`.
+
+Merge-Commits ohne eigene Änderung zählen nicht, wie bei der Vorbedingung.
+Die Regel gilt im PR-Lauf und im Push-Lauf gleich. `GITHUB_ACTOR` und der
+PR-Autor zählen nicht mehr: sie bestätigen den PR, nicht den einzelnen Commit.
+Der Schritt braucht `GITHUB_TOKEN` mit `contents: read`.
 
 Fehlt die Bestätigung, entfällt die Ausnahme. Der Check nennt dann den Grund,
-zum Beispiel «GITHUB_TOKEN fehlt». Ein Bot-Diff wird rot statt still grün.
+zum Beispiel «GITHUB_TOKEN fehlt» oder den Commit ohne Signatur. Ein Bot-Diff
+wird rot statt still grün.
 
-Eine Lücke bleibt: PR-Autor und API bestätigen den PR, nicht den einzelnen
-Commit. Ein Mensch mit Schreibrecht kann einen Commit mit gefälschtem Autor auf
-den Branch eines Bot-PR pushen. PR-Lauf und Push-Lauf bleiben dann grün. Ein
-Angriff braucht also einen offenen Bot-PR. Den eigenen PR eines Menschen
-bestätigt der Check nicht mehr.
+**Warum die Signatur trägt.** Login, Committer und E-Mail lassen sich frei
+setzen. GitHub leitet `author.login` aus der E-Mail ab und nennt bei einer
+gefälschten Adresse also Dependabot. GitHub signiert einen Commit aber nur,
+wenn der Autor auch der ist, der ihn erzeugt. Ein Experiment vom 2026-10-26 in
+einem Wegwerf-Repository hat das bestätigt:
+
+| Weg | `author.login` | Committer | verified |
+|---|---|---|---|
+| Echter Dependabot-Commit | dependabot[bot] | web-flow | ja |
+| Contents-API mit User-Token, Autor Dependabot | dependabot[bot] | Mensch | nein |
+| dito, Committer «GitHub <noreply@github.com>» gesetzt | dependabot[bot] | web-flow | nein |
+| Workflow mit `GITHUB_TOKEN`, Autor Dependabot | dependabot[bot] | github-actions[bot] | nein |
+| Workflow mit `GITHUB_TOKEN`, ohne Autor | github-actions[bot] | web-flow | ja |
+
+Die letzte Zeile erklärt die feste Liste der Bots. Einen signierten Commit von
+`github-actions[bot]` erzeugt jeder, der einen Workflow pushen darf.
+
+**Grenzen:**
+
+- **Renovate** signiert nur mit `platformCommit: enabled`. Ohne diese
+  Einstellung entfällt die Ausnahme, und jeder Renovate-PR wird rot. Heute
+  nutzt kein Konsument Renovate.
+- Ändert ein Mensch etwas auf einem Bot-PR, wird der Check rot. Das ist
+  gewollt. Den Commit des Menschen begründet ein `Quality-Exception`-Trailer.
+- Pro Commit kommt ein API-Aufruf dazu. Bot-PRs haben meist einen Commit.
 
 ### Das Werkzeug kommt aus der Basis
 

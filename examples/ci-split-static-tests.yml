@@ -31,8 +31,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      # Für den Tamper-Check im Push-Lauf: zu welchem PR gehört ein Commit?
-      pull-requests: read
 
     steps:
       # fetch-depth: 0 ist Pflicht — der Tamper-Check vergleicht gegen den
@@ -123,8 +121,8 @@ jobs:
           # Beim ersten Push ist das der Null-SHA — der Check überspringt dann.
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
           LOCKFILE: composer.lock
-          # Im Push-Lauf bestätigt die GitHub-API einen Bot-Autor: der Commit
-          # gehört zu einem gemergten PR eines Bots. Braucht `pull-requests: read`.
+          # Die GitHub-API bestätigt jeden Bot-Commit über seine Signatur.
+          # Braucht nur `contents: read`.
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail

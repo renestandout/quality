@@ -245,15 +245,19 @@ function mergeHasOwnChange(root, sha) {
 }
 
 /**
- * Ein PR, mit dem GitHub einen Commit verknüpft.
+ * Was GitHub über einen Commit weiss.
  *
- * @typedef {{ author: string, merged: boolean }} PullRequest
+ * `verified` und `reason` stammen aus der Signaturprüfung. `committer` und
+ * `author` sind GitHub-Logins. GitHub leitet sie aus den E-Mail-Adressen im
+ * Commit ab; für sich allein beweisen sie deshalb nichts.
+ *
+ * @typedef {{ verified: boolean, reason: string, committer: string, author: string }} CommitIdentity
  */
 
 /**
- * Liefert die PRs zu einem Commit. Wirft, wenn die Antwort fehlt.
+ * Liefert, was GitHub über einen Commit weiss. Wirft, wenn die Antwort fehlt.
  *
- * @typedef {(sha: string) => PullRequest[]} PullsOf
+ * @typedef {(sha: string) => CommitIdentity} CommitOf
  */
 
 /**
@@ -269,18 +273,18 @@ function isBotLogin(login) {
 }
 
 /**
- * Fragt die GitHub-API nach den PRs zu einem Commit.
+ * Fragt die GitHub-API nach einem Commit.
  * Läuft in einem eigenen Node-Prozess, weil der Tamper-Check synchron ist.
  * Der Token geht über die Umgebung, nicht über die Kommandozeile.
  *
- * @type {PullsOf}
+ * @type {CommitOf}
  */
-function githubPullsOf(sha) {
+function githubCommitOf(sha) {
   if (!process.env.GITHUB_TOKEN) throw new Error('GITHUB_TOKEN fehlt')
   if (!process.env.GITHUB_REPOSITORY) throw new Error('GITHUB_REPOSITORY fehlt')
   const script = `
     const api = process.env.GITHUB_API_URL || 'https://api.github.com'
-    const res = await fetch(api + '/repos/' + process.env.GITHUB_REPOSITORY + '/commits/' + process.argv[1] + '/pulls', {
+    const res = await fetch(api + '/repos/' + process.env.GITHUB_REPOSITORY + '/commits/' + process.argv[1], {
       headers: {
         authorization: 'Bearer ' + process.env.GITHUB_TOKEN,
         accept: 'application/vnd.github+json',
@@ -292,8 +296,13 @@ function githubPullsOf(sha) {
       process.stderr.write('HTTP ' + res.status)
       process.exit(1)
     }
-    const pulls = await res.json()
-    process.stdout.write(JSON.stringify(pulls.map((p) => ({ author: p.user?.login ?? '', merged: p.merged_at != null }))))
+    const c = await res.json()
+    process.stdout.write(JSON.stringify({
+      verified: c.commit?.verification?.verified === true,
+      reason: c.commit?.verification?.reason ?? '',
+      committer: c.committer?.login ?? '',
+      author: c.author?.login ?? '',
+    }))
   `
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', script, sha], {
     encoding: 'utf8',
@@ -303,25 +312,33 @@ function githubPullsOf(sha) {
     const reason = result.stderr?.trim() || result.error?.message || `Status ${result.status}`
     throw new Error(`GitHub-API nicht erreichbar (${reason})`)
   }
-  return /** @type {PullRequest[]} */ (JSON.parse(result.stdout))
+  return /** @type {CommitIdentity} */ (JSON.parse(result.stdout))
 }
 
 /**
- * Der Autor des PR, wenn der Lauf zu einem PR gehört.
- * GitHub schreibt ihn in die Ereignisdatei. Ein Commit kann ihn nicht setzen.
- *
- * @returns {string | null}
+ * Die Bots, deren Commits die Ausnahme tragen. Jedes andere `[bot]` fehlt
+ * mit Absicht: github-actions etwa schreibt jeder, der einen Workflow pusht.
  */
-function pullRequestAuthor() {
-  const path = process.env.GITHUB_EVENT_PATH
-  if (!path) return null
-  try {
-    const event = JSON.parse(readFileSync(path, 'utf8'))
-    const login = event?.pull_request?.user?.login
-    return typeof login === 'string' ? login : null
-  } catch {
-    return null
-  }
+const SIGNING_BOTS = new Set(['dependabot[bot]', 'renovate[bot]'])
+
+/**
+ * Hat GitHub den Commit im Namen eines Bots erzeugt?
+ *
+ * Login, Committer und E-Mail lassen sich frei setzen. Nur die Signatur nicht:
+ * GitHub signiert einen Commit bloss, wenn der Autor auch der ist, der ihn
+ * erzeugt. Ein Mensch mit gefälschtem Autor erhält `unsigned`, auch über die
+ * Contents-API und auch mit GITHUB_TOKEN (Experiment vom 2026-10-26).
+ *
+ * @param {CommitIdentity} commit
+ * @returns {boolean}
+ */
+function signedByBot(commit) {
+  return (
+    commit.verified &&
+    commit.reason === 'valid' &&
+    commit.committer === 'web-flow' &&
+    SIGNING_BOTS.has(commit.author)
+  )
 }
 
 /**
@@ -329,36 +346,26 @@ function pullRequestAuthor() {
  *
  * Der Git-Autor allein reicht dafür nicht. Ihn setzt jeder selbst, etwa mit
  * `git commit --author='dependabot[bot] <…>'`. Er ist deshalb nur die
- * Vorbedingung. Die Bot-Identität bestätigt GitHub:
- *
- * - `GITHUB_ACTOR` ist ein Bot. So läuft der PR-Lauf eines Bot-PR.
- * - Im PR-Lauf, den ein Mensch auslöst, zählt der PR-Autor aus der
- *   Ereignisdatei. Das deckt «Update branch» auf einem Bot-PR ab.
- * - Im Push-Lauf gehört jeder Commit zu einem gemergten PR eines Bots. Das
- *   sagt die GitHub-API. Nach dem Merge eines Bot-PR ist `GITHUB_ACTOR` der
- *   Mensch, der gemergt hat.
- *
- * Fehlt die Bestätigung, entfällt die Ausnahme, und `unconfirmed` nennt den
- * Grund. Ein Bot-Diff wird dann rot statt still grün.
+ * Vorbedingung. Jeden Commit bestätigt danach GitHub einzeln.
  *
  * Ein Merge-Commit ohne eigene Änderung trägt nur Inhalt seiner Eltern. Er
  * zählt deshalb nicht als Autor. Ein Merge-Commit mit eigener Änderung zählt
  * wie jeder andere Commit. Ein pauschales `--no-merges` liesse diese Änderung
  * ungeprüft durch.
  *
- * Grenze: PR-Autor und API bestätigen den PR, nicht den einzelnen Commit. Ein
- * Mensch mit Schreibrecht kann einen Commit mit gefälschtem Autor auf den
- * Branch eines Bot-PR pushen. PR-Lauf und Push-Lauf bleiben dann grün.
+ * Ohne `base` gibt es keine Commits zu prüfen. Dann zählt nur `GITHUB_ACTOR`.
+ *
+ * Fehlt die Bestätigung, entfällt die Ausnahme, und `unconfirmed` nennt den
+ * Grund. Ein Bot-Diff wird dann rot statt still grün.
  *
  * @param {string} root
  * @param {string | null} base
- * @param {PullsOf} pullsOf
+ * @param {CommitOf} commitOf
  * @returns {{ bot: boolean, unconfirmed: string | null }}
  */
-function isBotAuthor(root, base, pullsOf) {
+function isBotAuthor(root, base, commitOf) {
   const no = { bot: false, unconfirmed: null }
-  if (isBotLogin(process.env.GITHUB_ACTOR ?? '')) return { bot: true, unconfirmed: null }
-  if (!base) return no
+  if (!base) return { bot: isBotLogin(process.env.GITHUB_ACTOR ?? ''), unconfirmed: null }
   /** @type {{ sha: string, author: string }[]} */
   let commits
   try {
@@ -377,17 +384,13 @@ function isBotAuthor(root, base, pullsOf) {
     commits.length > 0 && commits.every(({ author }) => /\[bot\]|renovate|dependabot/i.test(author))
   if (!claimed) return no
 
-  const prAuthor = pullRequestAuthor()
-  if (prAuthor !== null) {
-    if (isBotLogin(prAuthor)) return { bot: true, unconfirmed: null }
-    return { bot: false, unconfirmed: `der PR stammt von ${prAuthor}` }
-  }
   try {
-    const confirmed = commits.every(({ sha }) =>
-      pullsOf(sha).some((pr) => pr.merged && isBotLogin(pr.author)),
-    )
-    if (confirmed) return { bot: true, unconfirmed: null }
-    return { bot: false, unconfirmed: 'kein gemergter PR eines Bots zu diesen Commits' }
+    const unsigned = commits.find(({ sha }) => !signedByBot(commitOf(sha)))
+    if (!unsigned) return { bot: true, unconfirmed: null }
+    return {
+      bot: false,
+      unconfirmed: `Commit ${unsigned.sha.slice(0, 8)} hat GitHub nicht für einen Bot signiert`,
+    }
   } catch (err) {
     return { bot: false, unconfirmed: /** @type {Error} */ (err).message }
   }
@@ -454,10 +457,10 @@ export function isCi(env) {
  * und Tests, und deren Ausgabe hat kein Autor geschrieben. Ohne `base` ist
  * dieser Teil die ganze Prüfung und läuft immer.
  *
- * `pullsOf` fragt im Push-Lauf, zu welchen PRs ein Commit gehört. Ohne Angabe
- * fragt der Check die GitHub-API. Tests geben eine feste Antwort vor.
+ * `commitOf` fragt, was GitHub über einen Commit weiss. Ohne Angabe fragt der
+ * Check die GitHub-API. Tests geben eine feste Antwort vor.
  *
- * @param {{ root: string, base?: string | null, worktree?: boolean, ignorePaths?: string[], quiet?: boolean, pullsOf?: PullsOf }} options
+ * @param {{ root: string, base?: string | null, worktree?: boolean, ignorePaths?: string[], quiet?: boolean, commitOf?: CommitOf }} options
  * @returns {number}
  */
 export function runTamper({
@@ -466,7 +469,7 @@ export function runTamper({
   worktree = true,
   ignorePaths = [],
   quiet = false,
-  pullsOf = githubPullsOf,
+  commitOf = githubCommitOf,
 }) {
   // Beim ersten Push eines Branches gibt es keinen Stand davor. Sauber
   // überspringen, statt an git zu scheitern — und nicht auf den lokalen Modus
@@ -483,7 +486,7 @@ export function runTamper({
   if (base) assertRevisionExists(base, root)
   // Ohne ersten Commit gibt es kein HEAD: dann ist der gesamte Stand neu.
   const committed = hasCommit(root)
-  const { bot: botAuthor, unconfirmed } = isBotAuthor(root, base, pullsOf)
+  const { bot: botAuthor, unconfirmed } = isBotAuthor(root, base, commitOf)
   if (unconfirmed && !quiet) {
     process.stdout.write(
       c.yellow(

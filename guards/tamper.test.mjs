@@ -25,8 +25,9 @@ import {
 // node --test startet jede Testdatei in einem eigenen Prozess; das Löschen
 // wirkt deshalb nur hier.
 delete process.env.GITHUB_ACTOR
-// Dasselbe gilt für den PR-Autor aus der Ereignisdatei und für den Token, mit
-// dem runTamper im Push-Lauf die GitHub-API fragt.
+// Dasselbe gilt für den Token, mit dem runTamper die GitHub-API fragt. Die
+// Ereignisdatei liest runTamper nicht mehr; sie fliegt trotzdem raus, damit
+// ein Rückfall auf den PR-Autor hier nicht zufällig grün wird.
 delete process.env.GITHUB_EVENT_PATH
 delete process.env.GITHUB_TOKEN
 
@@ -1688,14 +1689,10 @@ function asHumanActor(fn) {
 }
 
 /**
- * Antwort der GitHub-API im Push-Lauf: der Commit gehört zu einem gemergten
- * PR von Dependabot.
- */
-const mergedBotPr = () => [{ author: 'dependabot[bot]', merged: true }]
-
-/**
  * Führt `fn` wie einen PR-Lauf aus, den ein Mensch ausgelöst hat. Den PR hat
  * `prAuthor` eröffnet. GitHub legt diese Angabe in der Ereignisdatei ab.
+ * Der Check liest sie nicht: der PR-Autor bestätigt keinen einzelnen Commit.
+ * Die Tests zeigen damit, dass auch ein Bot als PR-Autor nichts durchwinkt.
  *
  * @template T
  * @param {string} prAuthor
@@ -1715,12 +1712,102 @@ function asPullRequestRun(prAuthor, fn) {
   }
 }
 
+/**
+ * Antwort der GitHub-API zu einem echten Dependabot-Commit. So sieht etwa
+ * cli/cli 7d01a387 aus: GitHub hat ihn signiert, Committer ist `web-flow`.
+ *
+ * @returns {import('./tamper-git.mjs').CommitIdentity}
+ */
+const signedBotCommit = () => ({
+  verified: true,
+  reason: 'valid',
+  committer: 'web-flow',
+  author: 'dependabot[bot]',
+})
+
+/**
+ * Antwort der GitHub-API zu einem Commit, den ein Mensch mit
+ * `--author='dependabot[bot] <…>'` erzeugt hat. GitHub leitet `author` aus der
+ * E-Mail ab und nennt deshalb Dependabot. Eine Signatur fehlt.
+ *
+ * @returns {import('./tamper-git.mjs').CommitIdentity}
+ */
+const unsignedForgery = () => ({
+  verified: false,
+  reason: 'unsigned',
+  committer: 'human-dev',
+  author: 'dependabot[bot]',
+})
+
+test('PR-Lauf: ein unsignierter Commit mit Dependabot als Autor bleibt im Bot-PR ein Fund', () => {
+  // Restlücke nach 8a80fb5: ein Mensch pusht den Commit auf den Branch eines
+  // offenen Dependabot-PR. Der PR-Autor bestätigt den PR, nicht den Commit.
+  const { root, base } = forgedBotFixture()
+  try {
+    assert.equal(
+      asPullRequestRun('dependabot[bot]', () =>
+        runTamper({ root, base, quiet: true, commitOf: unsignedForgery }),
+      ),
+      1,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('PR-Lauf eines Bots: GITHUB_ACTOR allein bestätigt keinen unsignierten Commit', () => {
+  const { root, base } = forgedBotFixture()
+  const before = process.env.GITHUB_ACTOR
+  process.env.GITHUB_ACTOR = 'dependabot[bot]'
+  try {
+    assert.equal(runTamper({ root, base, quiet: true, commitOf: unsignedForgery }), 1)
+  } finally {
+    if (before === undefined) delete process.env.GITHUB_ACTOR
+    else process.env.GITHUB_ACTOR = before
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Push-Lauf: ein von GitHub signierter Dependabot-Commit bestätigt die Ausnahme', () => {
+  const { root, base } = botMergeFixture()
+  try {
+    assert.equal(
+      asHumanActor(() => runTamper({ root, base, quiet: true, commitOf: signedBotCommit })),
+      0,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+for (const [label, change] of /** @type {const} */ ([
+  // Ein Mensch erzeugt über einen eigenen Workflow mit GITHUB_TOKEN einen
+  // Commit. GitHub signiert ihn, aber nur mit github-actions als Autor
+  // (Experiment renestandout/tamper-sig-experiment, Commit c9f974eb).
+  ['ein signierter Commit von github-actions', { author: 'github-actions[bot]' }],
+  // Einen Committer «GitHub <noreply@github.com>» setzt jeder selbst. GitHub
+  // nennt dann web-flow, signiert aber nicht (Commit 6cf51054).
+  ['ein Commit, den GitHub nicht signiert hat', { verified: false, reason: 'unsigned' }],
+  ['eine Signatur, die GitHub nicht als gültig führt', { reason: 'expired_key' }],
+  ['ein Commit, den nicht GitHub committet hat', { committer: 'human-dev' }],
+])) {
+  test(`Push-Lauf: ${label} bestätigt die Bot-Ausnahme nicht`, () => {
+    const { root, base } = botMergeFixture()
+    const commitOf = () => ({ ...signedBotCommit(), ...change })
+    try {
+      assert.equal(asHumanActor(() => runTamper({ root, base, quiet: true, commitOf })), 1)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+}
+
 test('Push-Lauf: ein Merge-Commit ohne eigene Änderung hebt die Bot-Ausnahme nicht auf', () => {
   // Realfall adboard PR #57: PR-Lauf grün, Merge b0cfca3 auf main rot.
   const { root, base } = botMergeFixture()
   try {
     assert.equal(
-      asHumanActor(() => runTamper({ root, base, quiet: true, pullsOf: mergedBotPr })),
+      asHumanActor(() => runTamper({ root, base, quiet: true, commitOf: signedBotCommit })),
       0,
     )
   } finally {
@@ -1733,7 +1820,7 @@ test('Push-Lauf: eine eigene Änderung im Merge-Commit schaltet die Bot-Ausnahme
   const { root, base } = botMergeFixture({ mergeEdit: 'fremd@6.6.6' })
   try {
     assert.equal(
-      asHumanActor(() => runTamper({ root, base, quiet: true, pullsOf: mergedBotPr })),
+      asHumanActor(() => runTamper({ root, base, quiet: true, commitOf: signedBotCommit })),
       1,
     )
   } finally {
@@ -1747,7 +1834,7 @@ test('Push-Lauf: ein menschlicher Commit neben dem Bot-Commit schaltet die Ausna
     writeFileSync(join(root, 'yarn.lock'), 'paket@1.0.1\nfremd@6.6.6\n')
     execFileSync('git', ['commit', '--quiet', '-am', 'nachgeschoben'], { cwd: root })
     assert.equal(
-      asHumanActor(() => runTamper({ root, base, quiet: true, pullsOf: mergedBotPr })),
+      asHumanActor(() => runTamper({ root, base, quiet: true, commitOf: signedBotCommit })),
       1,
     )
   } finally {
@@ -1762,7 +1849,7 @@ test('Push-Lauf: ein Konflikt, gelöst mit der Fassung des Bots, schaltet die Au
   const { root, base } = botMergeFixture({ conflict: true })
   try {
     assert.equal(
-      asHumanActor(() => runTamper({ root, base, quiet: true, pullsOf: mergedBotPr })),
+      asHumanActor(() => runTamper({ root, base, quiet: true, commitOf: signedBotCommit })),
       1,
     )
   } finally {
@@ -1783,7 +1870,7 @@ test(
     try {
       chmodSync(objects, 0o555)
       assert.equal(
-        asHumanActor(() => runTamper({ root, base, quiet: true, pullsOf: mergedBotPr })),
+        asHumanActor(() => runTamper({ root, base, quiet: true, commitOf: signedBotCommit })),
         1,
       )
     } finally {
@@ -1808,7 +1895,9 @@ test('PR-Lauf: «Update branch» eines Menschen hebt die Bot-Ausnahme nicht auf'
     git('checkout', '--quiet', 'dependabot/paket')
     git('merge', '--quiet', '--no-ff', '--no-edit', 'main')
     assert.equal(
-      asPullRequestRun('dependabot[bot]', () => runTamper({ root, base: 'main', quiet: true })),
+      asPullRequestRun('dependabot[bot]', () =>
+        runTamper({ root, base: 'main', quiet: true, commitOf: signedBotCommit }),
+      ),
       0,
     )
   } finally {
@@ -1871,35 +1960,7 @@ test('PR-Lauf: ein gefälschter Bot-Autor im PR eines Menschen bleibt ein Fund',
   }
 })
 
-test('Push-Lauf: ein gefälschter Bot-Autor im gemergten PR eines Menschen bleibt ein Fund', () => {
-  const { root, base } = forgedBotFixture()
-  const pullsOf = () => [{ author: 'human-dev', merged: true }]
-  try {
-    assert.equal(
-      asHumanActor(() => runTamper({ root, base, quiet: true, pullsOf })),
-      1,
-    )
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('Push-Lauf: ein offener Bot-PR bestätigt einen direkt gepushten Commit nicht', () => {
-  // Der Mensch legt den Commit auf den Bot-Branch und pusht ihn zugleich
-  // direkt auf main. Der PR ist dann offen, nicht gemergt.
-  const { root, base } = forgedBotFixture()
-  const pullsOf = () => [{ author: 'dependabot[bot]', merged: false }]
-  try {
-    assert.equal(
-      asHumanActor(() => runTamper({ root, base, quiet: true, pullsOf })),
-      1,
-    )
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('Push-Lauf: die GitHub-API bestätigt den gemergten Bot-PR', async () => {
+test('Push-Lauf: die GitHub-API bestätigt den signierten Bot-Commit', async () => {
   // Der Server läuft in einem eigenen Prozess: runTamper wartet synchron auf
   // die Antwort und blockiert dabei diesen Prozess.
   const server = spawn(
@@ -1907,10 +1968,14 @@ test('Push-Lauf: die GitHub-API bestätigt den gemergten Bot-PR', async () => {
     [
       '-e',
       `require('node:http').createServer((req, res) => {
-        const ok = req.url.startsWith('/repos/standout/app/commits/') && req.url.endsWith('/pulls')
+        const ok = /^\\/repos\\/standout\\/app\\/commits\\/[0-9a-f]{40}$/.test(req.url)
           && req.headers.authorization === 'Bearer geheim'
         res.writeHead(ok ? 200 : 404, { 'content-type': 'application/json' })
-        res.end(ok ? JSON.stringify([{ user: { login: 'dependabot[bot]' }, merged_at: '2026-10-21T07:45:12Z' }]) : '{}')
+        res.end(ok ? JSON.stringify({
+          author: { login: 'dependabot[bot]' },
+          committer: { login: 'web-flow' },
+          commit: { verification: { verified: true, reason: 'valid' } },
+        }) : '{}')
       }).listen(0, '127.0.0.1', function () { console.log(this.address().port) })`,
     ],
     { stdio: ['ignore', 'pipe', 'inherit'] },
@@ -2047,7 +2112,7 @@ test('--base: die Bot-Ausnahme gilt nicht für uncommittete Änderungen', () => 
     )
     writeFileSync(join(root, 'yarn.lock'), 'paket@1.0.1\nfremd@6.6.6\n')
     const { code, output } = withOutput(() =>
-      runTamper({ root, base: 'main', pullsOf: mergedBotPr }),
+      runTamper({ root, base: 'main', commitOf: signedBotCommit }),
     )
     assert.equal(code, 0)
     assert.match(output, /Hinweis.*yarn\.lock/)
