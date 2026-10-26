@@ -96,6 +96,9 @@ Der Agent-Root folgt dem Skill:
    - Submodule und eingebettete Repos fehlen in `src/`. `prepare` nennt sie in
      einem Hinweis. Mit `--include <pfad>` lassen sie sich übernehmen.
    - Scheitert `prepare`, räumt es Image, Kopie und Agent-Root selbst weg.
+   - `prepare` belegt den Agent-Root atomar über `artifacts/`. Ein zweites,
+     gleichzeitiges `prepare` auf denselben Root endet mit `91` und lässt den
+     ersten Lauf unberührt.
    - Der Agent-Root darf kein Komma und kein `"` enthalten (`docker --mount`).
    - `--rw PATH` spiegelt die Ordner von `PATH` nach `scratch/rw/PATH`. `exec`
      hängt sie beschreibbar über `src/PATH`.
@@ -104,7 +107,7 @@ Der Agent-Root folgt dem Skill:
 2. Manifest schreiben, z. B. `"$ROOT/manifest.json"`:
 
    ```json
-   {"max_total_bytes": 1048576, "files": [{"path": "out/junit.xml", "max_bytes": 1048576}]}
+   { "max_total_bytes": 1048576, "files": [{ "path": "out/junit.xml", "max_bytes": 1048576 }] }
    ```
 
 3. Ausführen und übernehmen:
@@ -116,8 +119,28 @@ Der Agent-Root folgt dem Skill:
      security-audit/sandbox-run.sh exec --agent-root "$ROOT" \
        --image ddev/ddev-webserver:v1.25.4-rankscan-built --pg postgres:17-rankscan-built \
        --env-file security-audit/env/rankscan.env --rw storage --rw bootstrap/cache -- \
-       php vendor/bin/phpunit --do-not-cache-result --log-junit /scratch/out/junit.xml tests/Feature/...
+       php -d memory_limit=128M vendor/bin/phpunit --do-not-cache-result \
+         --log-junit /scratch/out/junit.xml tests/Feature/...
    ```
+
+   Das Image setzt `memory_limit=-1`. Ohne Grenze stirbt kein PHP-Prozess an
+   Speichermangel, ein Absturz ist dann nicht messbar. PHP liest
+   `memory_limit` aus keiner Umgebungsvariable. Setze es deshalb mit
+   `php -d memory_limit=<Wert>` im Befehl. Hängt eine Spur vom Speicher ab,
+   bildet der Verifier den Wert der Produktion nach. Ist dieser unbekannt,
+   nennt der Bericht den verwendeten Wert als Annahme.
+
+   Default `128M`, aus drei Gründen:
+   - `128M` ist der eingebaute Default von PHP und der Wert in
+     `php.ini-production`. Setzt die Produktion nichts, gilt er dort auch.
+   - In run-2 hat verify-04 mit `128M` einen Fatal gemessen. Der Wert ist also
+     schon erprobt.
+   - `128M` liegt weit unter `--memory 1g`. So endet PHP mit einem lesbaren
+     Fatal, bevor der Container am OOM-Killer stirbt.
+
+   Unsicher: Der echte Wert der rankscan-Worker ist nicht bekannt.
+   `config/horizon.php` setzt nur das Limit des Master-Prozesses. Braucht eine
+   ganze Test-Suite mehr Speicher, erhöhe den Wert und nenne ihn im Bericht.
 
    `promote.py` gibt eine JSON-Zeile aus: `command_exit`, `interrupted`,
    `containers_left`, `promoted`, `rejected` mit Grund. Exit 0: alles
@@ -136,6 +159,14 @@ Pro Agent-Root gibt es genau eine Übernahme: `promote.py` verlangt ein leeres
 `artifacts/`, und ein zweites `prepare` wird verweigert. Für einen weiteren Lauf
 mit Übernahme nimmt der Parent eine neue Agent-ID.
 
+Ein Lauf, dessen Zielbefehl am eigenen Prüftest scheitert, ist nicht
+verbraucht. Beispiel aus run-2: Bei verify-15 brach der Test des Verifiers mit
+`TestResponse::status() undefined` ab. Die Spur blieb danach ungeprüft. Der
+Parent wiederholt einen solchen Lauf mit einer neuen Agent-ID, also mit neuem
+`prepare`. Der Verifier korrigiert dafür seinen Test in `scratch/input/` des
+neuen Agent-Roots. Führt der Parent denselben Verifier per Nachricht weiter,
+zählt das nicht als neuer Agenten-Aufruf im Budget.
+
 Ergebnisse liest der Parent nur aus `artifacts/`, nie direkt aus `scratch/`.
 Zielcode kann in `scratch/` Symlinks auf Host-Dateien legen. Auf dem Host zeigen
 sie auf die echte Datei, z. B. einen SSH-Schlüssel.
@@ -144,18 +175,18 @@ Ein vollständiges Beispiel ist `tests/probe-rankscan.sh`.
 
 ## Kontrollen und Limits
 
-| Kontrolle | Umsetzung | Default | Option |
-|---|---|---|---|
-| Netz | Test-Container im Netz-Namespace von Postgres (`--network none`), sonst `--network none`; nur `lo` | – | – |
-| Umgebung | `env -i` mit genau den Schlüsseln aus `--env-file`; `PATH`, `HOME`, `TMPDIR` Pflicht; `HOME`, `TMPDIR`, `XDG_*`, `COMPOSER_HOME`, `COMPOSER_CACHE_DIR` müssen auf `/scratch` zeigen, ohne `.` und `..` | – | `--env-file` |
-| Dateisystem | `--read-only`, `src/` als `/src:ro`, einziger Schreibort `/scratch` | – | `--rw` |
-| CPU | `--cpus` | 2 | `--cpus` |
-| Speicher | `--memory`, Swap gleich Speicher | 1 GB | `--memory` |
-| Prozesse | `--pids-limit` | 256 | `--pids` |
-| Dateigrösse | `--ulimit fsize` | 64 MB | `--fsize` |
-| Disk | Grösse von `scratch.dmg` | 512 MB | `--scratch-size` (prepare) |
-| Laufzeit | `timeout` im Container, Host-Wächter nach Limit + 15 s | 300 s | `--timeout` |
-| Härtung | `--cap-drop ALL`, `no-new-privileges`, uid 65534, `--pull never` | – | – |
+| Kontrolle   | Umsetzung                                                                                                                                                                                              | Default | Option                     |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- | -------------------------- |
+| Netz        | Test-Container im Netz-Namespace von Postgres (`--network none`), sonst `--network none`; nur `lo`                                                                                                     | –       | –                          |
+| Umgebung    | `env -i` mit genau den Schlüsseln aus `--env-file`; `PATH`, `HOME`, `TMPDIR` Pflicht; `HOME`, `TMPDIR`, `XDG_*`, `COMPOSER_HOME`, `COMPOSER_CACHE_DIR` müssen auf `/scratch` zeigen, ohne `.` und `..` | –       | `--env-file`               |
+| Dateisystem | `--read-only`, `src/` als `/src:ro`, einziger Schreibort `/scratch`                                                                                                                                    | –       | `--rw`                     |
+| CPU         | `--cpus`                                                                                                                                                                                               | 2       | `--cpus`                   |
+| Speicher    | `--memory`, Swap gleich Speicher                                                                                                                                                                       | 1 GB    | `--memory`                 |
+| Prozesse    | `--pids-limit`                                                                                                                                                                                         | 256     | `--pids`                   |
+| Dateigrösse | `--ulimit fsize`                                                                                                                                                                                       | 64 MB   | `--fsize`                  |
+| Disk        | Grösse von `scratch.dmg`                                                                                                                                                                               | 512 MB  | `--scratch-size` (prepare) |
+| Laufzeit    | `timeout` im Container, Host-Wächter nach Limit + 15 s                                                                                                                                                 | 300 s   | `--timeout`                |
+| Härtung     | `--cap-drop ALL`, `no-new-privileges`, uid 65534, `--pull never`                                                                                                                                       | –       | –                          |
 
 Postgres und Redis laufen ebenfalls gehärtet, mit Wegwerf-Daten auf tmpfs und
 Dummy-Zugang `db`/`db`, Datenbank `db_test`.
@@ -206,16 +237,22 @@ Regeln:
   needs_validation mit der Meldung von exec als Blocker.
 - Ergebnisse nur aus artifacts/ lesen. Dateien in scratch/ nie öffnen oder
   lesen; nur nach scratch/input/ schreiben.
+- Scheitert der Zielbefehl am eigenen Prüftest (Fehler im Test, nicht im
+  Zielcode), wiederhole den Lauf mit einer neuen Agent-ID. Die Spur ist damit
+  nicht verbraucht. Führst du denselben Verifier per Nachricht weiter, zählt
+  das nicht als neuer Agenten-Aufruf.
+- PHP-Befehle mit php -d memory_limit=<Wert> starten, Default 128M. Hängt eine
+  Spur vom Speicher ab, den Wert der Produktion nachbilden oder als Annahme nennen.
 ```
 
 ## Tests
 
-| Test | Braucht | Befehl |
-|---|---|---|
-| `promote.py` | Python 3.9+ | `python3 -I -m unittest discover -s security-audit/tests -p 'test_*.py'` |
-| `prepare`, `cleanup` | hdiutil | `bash security-audit/tests/test_prepare.sh` |
-| Abnahme | Profil `audit`, Images | `bash security-audit/tests/acceptance.sh` |
-| Probelauf rankscan | Abnahme-Nachweis | `bash security-audit/tests/probe-rankscan.sh` |
+| Test                 | Braucht                | Befehl                                                                   |
+| -------------------- | ---------------------- | ------------------------------------------------------------------------ |
+| `promote.py`         | Python 3.9+            | `python3 -I -m unittest discover -s security-audit/tests -p 'test_*.py'` |
+| `prepare`, `cleanup` | hdiutil                | `bash security-audit/tests/test_prepare.sh`                              |
+| Abnahme              | Profil `audit`, Images | `bash security-audit/tests/acceptance.sh`                                |
+| Probelauf rankscan   | Abnahme-Nachweis       | `bash security-audit/tests/probe-rankscan.sh`                            |
 
 `ACCEPTANCE_CASES="fall1 fall2"` führt nur ausgewählte Fälle aus. Eine
 Teilauswahl schreibt keinen Nachweis.
