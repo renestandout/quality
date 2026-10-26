@@ -1,0 +1,365 @@
+"""Tests für promote.py. Sie laufen ohne Docker.
+
+Die Testdaten liegen unter ~/security-audit-skill/_test/, nicht unter /tmp.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import signal
+import sys
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+
+import promote  # noqa: E402
+from promote import Entry, Manifest, PromoteError  # noqa: E402
+
+TEST_ROOT = os.path.join(os.path.expanduser("~"), "security-audit-skill", "_test")
+
+
+class Fixture(unittest.TestCase):
+    def setUp(self) -> None:
+        self.base = os.path.join(TEST_ROOT, f"promote-{os.getpid()}-{self._testMethodName}")
+        shutil.rmtree(self.base, ignore_errors=True)
+        self.scratch = os.path.join(self.base, "scratch")
+        self.artifacts = os.path.join(self.base, "artifacts")
+        os.makedirs(os.path.join(self.scratch, "out"))
+        os.makedirs(self.artifacts)
+        self.scratch_fd = os.open(self.scratch, os.O_RDONLY | os.O_DIRECTORY)
+        self.artifacts_fd = os.open(self.artifacts, os.O_RDONLY | os.O_DIRECTORY)
+
+    def tearDown(self) -> None:
+        os.close(self.scratch_fd)
+        os.close(self.artifacts_fd)
+        shutil.rmtree(self.base, ignore_errors=True)
+
+    def write(self, rel: str, data: bytes) -> str:
+        path = os.path.join(self.scratch, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def promote(self, rel: str, max_bytes: int = 1024, remaining: int = 1 << 20, **kw) -> int:
+        return promote.promote_file(self.scratch_fd, self.artifacts_fd, Entry(rel, max_bytes), remaining, **kw)
+
+    def assert_rejected(self, code: str, rel: str, **kw) -> None:
+        with self.assertRaises(PromoteError) as ctx:
+            self.promote(rel, **kw)
+        self.assertTrue(str(ctx.exception).startswith(code + ":"), str(ctx.exception))
+
+    def dest(self, rel: str) -> str:
+        return os.path.join(self.artifacts, rel)
+
+
+class PromoteFileTest(Fixture):
+    def test_promotes_regular_file(self) -> None:
+        self.write("out/a.txt", b"hallo")
+        self.assertEqual(self.promote("out/a.txt"), 5)
+        with open(self.dest("out/a.txt"), "rb") as f:
+            self.assertEqual(f.read(), b"hallo")
+        results = promote.promote_all(self.scratch_fd, self.artifacts_fd, Manifest((), 10))
+        self.assertEqual(results, [])
+
+    def test_promote_all_reports_promoted(self) -> None:
+        self.write("out/a.txt", b"hallo")
+        results = promote.promote_all(self.scratch_fd, self.artifacts_fd, Manifest((Entry("out/a.txt", 10),), 10))
+        self.assertEqual([(r.path, r.status, r.bytes) for r in results], [("out/a.txt", "promoted", 5)])
+
+    def test_rejects_invalid_paths(self) -> None:
+        for rel in ["", "/etc/passwd", ".", "../x", "out/../x", "out//x", "out/./x", "out/\0x"]:
+            with self.subTest(rel=rel):
+                with self.assertRaises(PromoteError) as ctx:
+                    promote.split_rel_path(rel)
+                self.assertTrue(str(ctx.exception).startswith("invalid-path:"))
+
+    def test_rejects_symlink_leaf(self) -> None:
+        os.symlink("/etc/hosts", os.path.join(self.scratch, "out/l"))
+        self.assert_rejected("symlink", "out/l")
+        self.assertFalse(os.path.lexists(self.dest("out/l")))
+
+    def test_rejects_symlink_parent(self) -> None:
+        real = os.path.join(self.scratch, "real")
+        os.makedirs(real)
+        self.write("real/a.txt", b"x")
+        os.symlink(real, os.path.join(self.scratch, "out/sub"))
+        self.assert_rejected("symlink", "out/sub/a.txt")
+
+    def test_rejects_hardlink(self) -> None:
+        src = self.write("out/a.txt", b"x")
+        os.link(src, os.path.join(self.scratch, "out/h"))
+        self.assert_rejected("hardlink", "out/h")
+
+    def test_rejects_fifo_without_blocking(self) -> None:
+        os.mkfifo(os.path.join(self.scratch, "out/f"))
+
+        def timeout(signum, frame):  # pragma: no cover - nur bei Fehler
+            raise AssertionError("promote_file blockiert auf einer FIFO")
+
+        old = signal.signal(signal.SIGALRM, timeout)
+        signal.alarm(5)
+        try:
+            self.assert_rejected("not-regular", "out/f")
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old)
+
+    def test_rejects_directory(self) -> None:
+        os.makedirs(os.path.join(self.scratch, "out/d"))
+        self.assert_rejected("not-regular", "out/d")
+
+    def test_rejects_per_file_limit(self) -> None:
+        self.write("out/a.txt", b"x" * 11)
+        self.assert_rejected("too-large", "out/a.txt", max_bytes=10)
+        self.assertFalse(os.path.lexists(self.dest("out/a.txt")))
+
+    def test_rejects_total_limit(self) -> None:
+        self.write("out/a.txt", b"x" * 6)
+        self.write("out/b.txt", b"y" * 6)
+        manifest = Manifest((Entry("out/a.txt", 10), Entry("out/b.txt", 10)), 10)
+        results = promote.promote_all(self.scratch_fd, self.artifacts_fd, manifest)
+        self.assertEqual(results[0].status, "promoted")
+        self.assertEqual(results[1].status, "rejected")
+        self.assertTrue(results[1].reason.startswith("total-exceeded:"))
+        self.assertFalse(os.path.lexists(self.dest("out/b.txt")))
+
+    def test_rejects_change_during_copy(self) -> None:
+        path = self.write("out/a.txt", b"hallo")
+
+        def grow(src_fd: int) -> None:
+            with open(path, "ab") as f:
+                f.write(b"!")
+
+        manifest = Manifest((Entry("out/a.txt", 100),), 100)
+        results = promote.promote_all(self.scratch_fd, self.artifacts_fd, manifest, _after_copy=grow)
+        self.assertEqual(results[0].status, "rejected")
+        self.assertTrue(results[0].reason.startswith("changed:"), results[0].reason)
+        self.assertFalse(os.path.lexists(self.dest("out/a.txt")))
+
+    def test_rejects_existing_destination(self) -> None:
+        self.write("out/a.txt", b"neu")
+        os.makedirs(self.dest("out"))
+        with open(self.dest("out/a.txt"), "wb") as f:
+            f.write(b"alt")
+        self.assert_rejected("dest-exists", "out/a.txt")
+        with open(self.dest("out/a.txt"), "rb") as f:
+            self.assertEqual(f.read(), b"alt")
+
+    def test_rejects_symlink_in_destination_parent(self) -> None:
+        self.write("out/a.txt", b"x")
+        elsewhere = os.path.join(self.base, "elsewhere")
+        os.makedirs(elsewhere)
+        os.symlink(elsewhere, self.dest("out"))
+        with self.assertRaises(PromoteError) as ctx:
+            self.promote("out/a.txt")
+        self.assertTrue(str(ctx.exception).split(":")[0] in ("dest-not-dir", "symlink"), str(ctx.exception))
+        self.assertEqual(os.listdir(elsewhere), [])
+
+    def test_file_in_parent_position_is_not_dir(self) -> None:
+        self.write("out/datei", b"x")
+        self.assert_rejected("not-dir", "out/datei/a.txt")
+
+    def test_missing_parent_names_whole_entry(self) -> None:
+        with self.assertRaises(PromoteError) as ctx:
+            self.promote("gibt/es/nicht.txt")
+        self.assertEqual(str(ctx.exception), "missing: gibt/es/nicht.txt")
+
+    def test_missing_file_is_rejected_others_promoted(self) -> None:
+        self.write("out/a.txt", b"x")
+        manifest = Manifest((Entry("out/missing", 10), Entry("out/a.txt", 10)), 100)
+        results = promote.promote_all(self.scratch_fd, self.artifacts_fd, manifest)
+        self.assertEqual(results[0].status, "rejected")
+        self.assertTrue(results[0].reason.startswith("missing:"))
+        self.assertEqual(results[1].status, "promoted")
+
+
+class IoErrorTest(Fixture):
+    def tearDown(self) -> None:
+        os.chmod(self.artifacts, 0o700)
+        super().tearDown()
+
+    def test_io_error_is_reported_not_raised(self) -> None:
+        self.write("out/a.txt", b"x")
+        self.write("b.txt", b"y")
+        os.chmod(self.artifacts, 0o500)
+        manifest = Manifest((Entry("out/a.txt", 10), Entry("b.txt", 10)), 100)
+        results = promote.promote_all(self.scratch_fd, self.artifacts_fd, manifest)
+        self.assertEqual([r.status for r in results], ["rejected", "rejected"])
+        self.assertTrue(results[0].reason.startswith("io-error:"), results[0].reason)
+        self.assertTrue(results[1].reason.startswith("io-error:"), results[1].reason)
+
+    def test_unreadable_source_dir_is_io_error(self) -> None:
+        self.write("out/sub/a.txt", b"x")
+        os.chmod(os.path.join(self.scratch, "out/sub"), 0)
+        try:
+            results = promote.promote_all(self.scratch_fd, self.artifacts_fd, Manifest((Entry("out/sub/a.txt", 10),), 10))
+        finally:
+            os.chmod(os.path.join(self.scratch, "out/sub"), 0o700)
+        self.assertTrue(results[0].reason.startswith("io-error:"), results[0].reason)
+        self.assertIn("EACCES", results[0].reason)
+
+
+class ManifestTest(Fixture):
+    def load(self, data: object) -> Manifest:
+        path = os.path.join(self.base, "manifest.json")
+        with open(path, "w") as f:
+            json.dump(data, f)
+        return promote.load_manifest(path)
+
+    def test_load_manifest_reads_entries(self) -> None:
+        m = self.load({"max_total_bytes": 20, "files": [{"path": "out/a.txt", "max_bytes": 10}]})
+        self.assertEqual(m, Manifest((Entry("out/a.txt", 10),), 20))
+
+    def test_load_manifest_rejects_duplicates_and_bad_limits(self) -> None:
+        bad = [
+            {"max_total_bytes": 20, "files": [{"path": "a", "max_bytes": 1}, {"path": "a", "max_bytes": 1}]},
+            {"max_total_bytes": 0, "files": []},
+            {"max_total_bytes": 20, "files": [{"path": "a", "max_bytes": 0}]},
+            {"max_total_bytes": 20, "files": [{"path": "a"}]},
+            {"files": []},
+            {"max_total_bytes": 20, "files": [{"path": "../a", "max_bytes": 1}]},
+            {"max_total_bytes": True, "files": []},
+        ]
+        for data in bad:
+            with self.subTest(data=data):
+                with self.assertRaises(ValueError):
+                    self.load(data)
+
+
+class CliTest(Fixture):
+    def run_cli(self, *cmd: str, manifest: object = None, label: tuple = ("--no-container-check",)) -> "tuple[int, dict]":
+        import subprocess
+
+        mpath = os.path.join(self.base, "manifest.json")
+        with open(mpath, "w") as f:
+            json.dump(manifest or {"max_total_bytes": 100, "files": [{"path": "out/a.txt", "max_bytes": 100}]}, f)
+        proc = subprocess.run(
+            [sys.executable, "-I", os.path.join(os.path.dirname(HERE), "promote.py"),
+             "--scratch", self.scratch, "--artifacts", self.artifacts, "--manifest", mpath,
+             *label, "--", *cmd],
+            capture_output=True, text=True,
+        )
+        report = json.loads(proc.stdout) if proc.stdout.strip() else {}
+        return proc.returncode, report
+
+    def writer(self, exit_code: int = 0) -> list:
+        target = os.path.join(self.scratch, "out", "a.txt")
+        code = f"open({target!r}, 'w').write('hallo'); raise SystemExit({exit_code})"
+        return [sys.executable, "-c", code]
+
+    def test_cli_runs_command_then_promotes(self) -> None:
+        rc, report = self.run_cli(*self.writer())
+        self.assertEqual(rc, 0)
+        self.assertEqual(report["command_exit"], 0)
+        self.assertEqual(report["promoted"], [{"path": "out/a.txt", "bytes": 5}])
+        self.assertEqual(report["rejected"], [])
+        self.assertFalse(report["containers_left"])
+
+    def test_cli_reports_command_exit_but_still_promotes(self) -> None:
+        rc, report = self.run_cli(*self.writer(7))
+        self.assertEqual(rc, 0)
+        self.assertEqual(report["command_exit"], 7)
+        self.assertEqual(report["promoted"][0]["path"], "out/a.txt")
+
+    def test_cli_exit_1_on_rejection(self) -> None:
+        rc, report = self.run_cli(sys.executable, "-c", "pass")
+        self.assertEqual(rc, 1)
+        self.assertTrue(report["rejected"][0]["reason"].startswith("missing:"))
+
+    def test_cli_rejects_nonempty_artifacts(self) -> None:
+        with open(os.path.join(self.artifacts, "alt"), "w") as f:
+            f.write("x")
+        rc, _ = self.run_cli(*self.writer())
+        self.assertEqual(rc, 2)
+
+    def test_cli_missing_command_reports_127(self) -> None:
+        rc, report = self.run_cli("/gibt/es/nicht")
+        self.assertEqual(report["command_exit"], 127)
+        self.assertEqual(rc, 1)
+
+    def fake_docker(self, output: str, code: int = 0) -> dict:
+        bindir = os.path.join(self.base, "bin")
+        os.makedirs(bindir, exist_ok=True)
+        path = os.path.join(bindir, "docker")
+        with open(path, "w") as f:
+            f.write(f"#!/bin/sh\nprintf '%s' {output!r}\nexit {code}\n")
+        os.chmod(path, 0o755)
+        return {**os.environ, "PATH": bindir + os.pathsep + os.environ.get("PATH", "")}
+
+    def test_containers_left_detects_running(self) -> None:
+        env = self.fake_docker("abc123\n")
+        old = os.environ["PATH"]
+        os.environ["PATH"] = env["PATH"]
+        try:
+            self.assertTrue(promote.containers_left("security-audit.agent=x"))
+        finally:
+            os.environ["PATH"] = old
+
+    def test_containers_left_empty_and_docker_error(self) -> None:
+        old = os.environ["PATH"]
+        try:
+            os.environ["PATH"] = self.fake_docker("")["PATH"]
+            self.assertFalse(promote.containers_left("security-audit.agent=x"))
+            os.environ["PATH"] = self.fake_docker("", 1)["PATH"]
+            self.assertTrue(promote.containers_left("security-audit.agent=x"))
+        finally:
+            os.environ["PATH"] = old
+
+    def test_cli_rejects_malformed_label(self) -> None:
+        for label in ("abc123def456", "security-audit.agent=", "security-audit.agent=xyz", "foo=abc123def456"):
+            with self.subTest(label=label):
+                rc, _ = self.run_cli(*self.writer(), label=("--container-label", label))
+                self.assertEqual(rc, 2)
+                self.assertFalse(os.path.exists(os.path.join(self.scratch, "out", "a.txt")), "Befehl lief trotzdem")
+
+    def test_cli_requires_container_check_choice(self) -> None:
+        rc, _ = self.run_cli(*self.writer(), label=())
+        self.assertEqual(rc, 2)
+
+    def test_cli_forwards_sigterm_and_waits(self) -> None:
+        import subprocess
+        import time
+
+        mpath = os.path.join(self.base, "manifest.json")
+        with open(mpath, "w") as f:
+            json.dump({"max_total_bytes": 100, "files": [{"path": "out/a.txt", "max_bytes": 100}]}, f)
+        target = os.path.join(self.scratch, "out", "a.txt")
+        # Das Kind braucht nach dem Signal 2 s zum Aufräumen und schreibt dann.
+        child = ("import signal, sys, time\n"
+                 "def h(n, f):\n"
+                 "    time.sleep(2)\n"
+                 f"    open({target!r}, 'w').write('aufgeraeumt')\n"
+                 "    sys.exit(143)\n"
+                 "signal.signal(signal.SIGTERM, h)\n"
+                 "signal.signal(signal.SIGINT, h)\n"
+                 "time.sleep(30)\n")
+        proc = subprocess.Popen(
+            [sys.executable, "-I", os.path.join(os.path.dirname(HERE), "promote.py"),
+             "--scratch", self.scratch, "--artifacts", self.artifacts, "--manifest", mpath,
+             "--no-container-check", "--", sys.executable, "-c", child],
+            stdout=subprocess.PIPE, text=True,
+        )
+        time.sleep(1)
+        proc.send_signal(signal.SIGTERM)
+        out, _ = proc.communicate(timeout=20)
+        report = json.loads(out)
+        self.assertEqual(report["command_exit"], 143)
+        self.assertEqual(report["interrupted"], "SIGTERM")
+        self.assertEqual(report["promoted"], [{"path": "out/a.txt", "bytes": 11}])
+
+    def test_open_roots_not_inheritable(self) -> None:
+        s_fd, a_fd = promote.open_roots(self.scratch, self.artifacts)
+        try:
+            self.assertFalse(os.get_inheritable(s_fd))
+            self.assertFalse(os.get_inheritable(a_fd))
+        finally:
+            os.close(s_fd)
+            os.close(a_fd)
+
+
+if __name__ == "__main__":
+    unittest.main()

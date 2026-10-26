@@ -1,0 +1,2 @@
+# Die Sandbox für den security-audit-Skill braucht nur der Audit-Host.
+/security-audit export-ignore

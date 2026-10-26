@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+"""Übernimmt erlaubte Dateien aus scratch/ nach artifacts/.
+
+Setzt die 11 Schritte aus «Write isolation» im Skill security-audit um.
+Jede Datei wird einzeln übernommen. Kein Pfad wird zweimal geöffnet.
+Nur Python-Standardbibliothek, lauffähig ab Python 3.9.
+"""
+
+from __future__ import annotations
+
+import errno
+import json
+import os
+import re
+import stat
+from dataclasses import dataclass
+from typing import Callable, Optional
+
+CHUNK = 64 * 1024
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+SRC_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+DEST_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+
+
+@dataclass(frozen=True)
+class Entry:
+    path: str
+    max_bytes: int
+
+
+@dataclass(frozen=True)
+class Manifest:
+    files: tuple
+    max_total_bytes: int
+
+
+@dataclass
+class Result:
+    path: str
+    status: str
+    reason: Optional[str]
+    bytes: int
+
+
+class PromoteError(Exception):
+    """Grund der Ablehnung. Der Text beginnt mit einem Code und einem Doppelpunkt."""
+
+
+def platform_supported() -> bool:
+    """Schritt 9: Ohne dir_fd- und no-follow-Unterstützung wird nichts übernommen."""
+    return os.open in os.supports_dir_fd and os.mkdir in os.supports_dir_fd and hasattr(os, "O_NOFOLLOW")
+
+
+def _positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def load_manifest(path: str) -> Manifest:
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or not _positive_int(data.get("max_total_bytes")):
+        raise ValueError("Manifest: max_total_bytes fehlt oder ist nicht positiv")
+    files = data.get("files")
+    if not isinstance(files, list):
+        raise ValueError("Manifest: files fehlt")
+    entries = []
+    seen = set()
+    for item in files:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            raise ValueError("Manifest: Eintrag ohne path")
+        if not _positive_int(item.get("max_bytes")):
+            raise ValueError(f"Manifest: max_bytes für {item['path']!r} fehlt oder ist nicht positiv")
+        try:
+            split_rel_path(item["path"])
+        except PromoteError as e:
+            raise ValueError(f"Manifest: {e}") from None
+        if item["path"] in seen:
+            raise ValueError(f"Manifest: {item['path']!r} doppelt")
+        seen.add(item["path"])
+        entries.append(Entry(item["path"], item["max_bytes"]))
+    return Manifest(tuple(entries), data["max_total_bytes"])
+
+
+def split_rel_path(rel: str) -> list:
+    """Schritt 1: relativer Pfad ohne leere, '.'- oder '..'-Teile."""
+    if not rel or "\0" in rel or rel.startswith("/"):
+        raise PromoteError(f"invalid-path: {rel!r}")
+    parts = rel.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        raise PromoteError(f"invalid-path: {rel!r}")
+    return parts
+
+
+def _open_source_dir(parent_fd: int, name: str, rel: str) -> int:
+    try:
+        return os.open(name, DIR_FLAGS, dir_fd=parent_fd)
+    except OSError as e:
+        if e.errno == errno.ENOENT:
+            raise PromoteError(f"missing: {rel}") from None
+        if e.errno in (errno.ELOOP, errno.ENOTDIR):
+            # Ohne zu folgen nachsehen, was an dieser Stelle liegt.
+            st = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            code = "symlink" if stat.S_ISLNK(st.st_mode) else "not-dir"
+            raise PromoteError(f"{code}: {rel}: {name}") from None
+        raise PromoteError(f"io-error: {rel}: {name}: {errno.errorcode.get(e.errno, e.errno)} {e.strerror}") from None
+
+
+def _walk_source(scratch_fd: int, parts: list, rel: str) -> int:
+    """Schritt 2: Elternordner einzeln no-follow vom Scratch-Deskriptor aus öffnen."""
+    fd = os.dup(scratch_fd)
+    try:
+        for name in parts:
+            nxt = _open_source_dir(fd, name, rel)
+            os.close(fd)
+            fd = nxt
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _walk_dest(artifacts_fd: int, parts: list) -> int:
+    """Schritt 7: Zielordner no-follow ablaufen, fehlende exklusiv anlegen."""
+    fd = os.dup(artifacts_fd)
+    try:
+        for name in parts:
+            try:
+                os.mkdir(name, 0o700, dir_fd=fd)
+            except FileExistsError:
+                pass
+            try:
+                nxt = os.open(name, DIR_FLAGS, dir_fd=fd)
+            except OSError as e:
+                if e.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise PromoteError(f"dest-not-dir: {name}") from None
+                raise PromoteError(f"io-error: {name}: {errno.errorcode.get(e.errno, e.errno)} {e.strerror}") from None
+            if not stat.S_ISDIR(os.fstat(nxt).st_mode):
+                os.close(nxt)
+                raise PromoteError(f"dest-not-dir: {name}")
+            os.close(fd)
+            fd = nxt
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _identity(st: os.stat_result) -> tuple:
+    return (st.st_dev, st.st_ino, st.st_mode, st.st_nlink, st.st_size, st.st_mtime_ns)
+
+
+def _check_source(st: os.stat_result, entry: Entry, remaining_total: int) -> None:
+    """Schritt 4: regulär, genau ein Link, innerhalb beider Limits."""
+    if not stat.S_ISREG(st.st_mode):
+        raise PromoteError(f"not-regular: {entry.path}")
+    if st.st_nlink != 1:
+        raise PromoteError(f"hardlink: {entry.path} hat {st.st_nlink} Links")
+    if st.st_size > entry.max_bytes:
+        raise PromoteError(f"too-large: {entry.path} hat {st.st_size} Bytes, erlaubt {entry.max_bytes}")
+    if st.st_size > remaining_total:
+        raise PromoteError(f"total-exceeded: {entry.path} hat {st.st_size} Bytes, übrig {remaining_total}")
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        n = os.write(fd, view)
+        view = view[n:]
+
+
+def promote_file(
+    scratch_fd: int,
+    artifacts_fd: int,
+    entry: Entry,
+    remaining_total: int,
+    *,
+    _after_copy: Optional[Callable[[int], None]] = None,
+) -> int:
+    """Übernimmt eine Datei. Gibt die kopierten Bytes zurück oder wirft PromoteError.
+
+    Ein halb geschriebenes Ziel entfernt diese Funktion selbst (Schritt 11).
+    """
+    parts = split_rel_path(entry.path)
+    src_dir = _walk_source(scratch_fd, parts[:-1], entry.path)
+    try:
+        # Schritt 3: Blatt no-follow und nonblocking öffnen.
+        try:
+            src = os.open(parts[-1], SRC_FLAGS, dir_fd=src_dir)
+        except OSError as e:
+            if e.errno == errno.ENOENT:
+                raise PromoteError(f"missing: {entry.path}") from None
+            if e.errno == errno.ELOOP:
+                raise PromoteError(f"symlink: {entry.path}") from None
+            raise PromoteError(f"io-error: {entry.path}: {errno.errorcode.get(e.errno, e.errno)} {e.strerror}") from None
+    finally:
+        os.close(src_dir)
+
+    try:
+        before = os.fstat(src)
+        _check_source(before, entry, remaining_total)
+        limit = min(entry.max_bytes, remaining_total, before.st_size)
+
+        # Schritt 5 und 6: mit Limit lesen, genau die geprüfte Grösse.
+        chunks = []
+        total = 0
+        while total < before.st_size:
+            chunk = os.read(src, min(CHUNK, before.st_size - total))
+            if not chunk:
+                raise PromoteError(f"changed: {entry.path} ist beim Lesen geschrumpft")
+            total += len(chunk)
+            if total > limit:
+                raise PromoteError(f"too-large: {entry.path} überschreitet beim Lesen das Limit")
+            chunks.append(chunk)
+        if os.read(src, 1):
+            raise PromoteError(f"changed: {entry.path} ist beim Lesen gewachsen")
+        if _after_copy is not None:
+            _after_copy(src)
+        if _identity(os.fstat(src)) != _identity(before):
+            raise PromoteError(f"changed: {entry.path} hat sich während der Übernahme geändert")
+        data = b"".join(chunks)
+    finally:
+        os.close(src)
+
+    # Schritt 7 und 8: Ziel exklusiv und no-follow anlegen.
+    dest_dir = _walk_dest(artifacts_fd, parts[:-1])
+    try:
+        try:
+            dest = os.open(parts[-1], DEST_FLAGS, 0o600, dir_fd=dest_dir)
+        except FileExistsError:
+            raise PromoteError(f"dest-exists: {entry.path}") from None
+        except OSError as e:
+            if e.errno == errno.ELOOP:
+                raise PromoteError(f"dest-not-dir: {entry.path} ist ein Symlink") from None
+            raise PromoteError(f"io-error: {entry.path}: {errno.errorcode.get(e.errno, e.errno)} {e.strerror}") from None
+        try:
+            st = os.fstat(dest)
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                raise PromoteError(f"dest-not-dir: {entry.path} ist kein neues reguläres Ziel")
+            _write_all(dest, data)
+        except BaseException:
+            os.close(dest)
+            os.unlink(parts[-1], dir_fd=dest_dir)
+            raise
+        os.close(dest)
+    finally:
+        os.close(dest_dir)
+    return len(data)
+
+
+def promote_all(
+    scratch_fd: int,
+    artifacts_fd: int,
+    manifest: Manifest,
+    *,
+    _after_copy: Optional[Callable[[int], None]] = None,
+) -> list:
+    """Übernimmt jeden Eintrag der Allowlist einzeln (Schritt 10 und 11)."""
+    results = []
+    if not platform_supported():
+        return [Result(e.path, "rejected", "unsupported-platform: dir_fd oder O_NOFOLLOW fehlt", 0) for e in manifest.files]
+    remaining = manifest.max_total_bytes
+    for entry in manifest.files:
+        try:
+            n = promote_file(scratch_fd, artifacts_fd, entry, remaining, _after_copy=_after_copy)
+        except PromoteError as e:
+            results.append(Result(entry.path, "rejected", str(e), 0))
+            continue
+        except OSError as e:
+            # Schritt 11: auch ein Ein-/Ausgabefehler verwirft nur diesen Eintrag.
+            results.append(Result(entry.path, "rejected", f"io-error: {entry.path}: {e.strerror or e}", 0))
+            continue
+        remaining -= n
+        results.append(Result(entry.path, "promoted", None, n))
+    return results
+
+
+def open_roots(scratch: str, artifacts: str) -> tuple:
+    """Öffnet beide Wurzeln. Python setzt O_CLOEXEC, der Kindprozess erbt sie nicht."""
+    scratch_fd = os.open(scratch, DIR_FLAGS)
+    try:
+        artifacts_fd = os.open(artifacts, DIR_FLAGS)
+    except BaseException:
+        os.close(scratch_fd)
+        raise
+    for fd in (scratch_fd, artifacts_fd):
+        os.set_inheritable(fd, False)
+    return scratch_fd, artifacts_fd
+
+
+def containers_left(label: str) -> bool:
+    import subprocess
+
+    proc = subprocess.run(
+        ["docker", "--context", "colima-audit", "ps", "-aq", "--filter", f"label={label}"],
+        capture_output=True, text=True,
+    )
+    # Kann Docker nicht antworten, gilt der Lauf als nicht sicher beendet.
+    return proc.returncode != 0 or bool(proc.stdout.strip())
+
+
+def run_forwarding_signals(command: list) -> tuple:
+    """Startet den Befehl und gibt SIGINT und SIGTERM an ihn weiter.
+
+    Wartet ohne Frist auf sein Ende, damit seine Traps die Container entfernen
+    können. Gibt (Exit-Code, Name des ersten Signals oder None) zurück.
+    """
+    import signal
+    import subprocess
+    import sys
+
+    try:
+        child = subprocess.Popen(command, close_fds=True)
+    except OSError as e:
+        print(f"promote.py: Befehl nicht startbar: {e}", file=sys.stderr)
+        return 127, None
+    received = []
+
+    def forward(signum, frame):
+        if not received:
+            received.append(signal.Signals(signum).name)
+        try:
+            child.send_signal(signum)
+        except ProcessLookupError:
+            pass
+
+    old = {s: signal.signal(s, forward) for s in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        returncode = child.wait()
+    finally:
+        for s, handler in old.items():
+            signal.signal(s, handler)
+    return returncode, (received[0] if received else None)
+
+
+def main(argv: Optional[list] = None) -> int:
+    import argparse
+    import subprocess
+    import sys
+
+    parser = argparse.ArgumentParser(
+        description="Startet einen Sandbox-Lauf und übernimmt danach erlaubte Dateien aus scratch/ nach artifacts/.",
+    )
+    parser.add_argument("--scratch", required=True)
+    parser.add_argument("--artifacts", required=True)
+    parser.add_argument("--manifest", required=True)
+    check = parser.add_mutually_exclusive_group(required=True)
+    check.add_argument("--container-label", help="Label der Sandbox-Container; nach dem Lauf darf keiner übrig sein.")
+    check.add_argument("--no-container-check", action="store_true", help="Nur für Tests ohne Docker.")
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args(argv)
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if not command:
+        parser.error("Befehl nach -- fehlt")
+    # Nur ein vollständiges Label trifft die Container. Ein blosser Hash als
+    # Filter träfe nie, und die Prüfung bestünde immer.
+    if args.container_label is not None and not re.fullmatch(r"security-audit\.agent=[0-9a-f]{12}", args.container_label):
+        parser.error("--container-label muss security-audit.agent=<12 Hex-Zeichen> sein; Wert von «sandbox-run.sh label»")
+
+    try:
+        manifest = load_manifest(args.manifest)
+    except (OSError, ValueError) as e:
+        print(f"promote.py: {e}", file=sys.stderr)
+        return 2
+    try:
+        if os.listdir(args.artifacts):
+            print("promote.py: artifacts/ ist nicht leer", file=sys.stderr)
+            return 2
+        scratch_fd, artifacts_fd = open_roots(args.scratch, args.artifacts)
+    except OSError as e:
+        print(f"promote.py: {e}", file=sys.stderr)
+        return 2
+
+    try:
+        command_exit, interrupted = run_forwarding_signals(command)
+        left = bool(args.container_label) and containers_left(args.container_label)
+        if left:
+            results = [Result(e.path, "rejected", "containers-left: Sandbox lief noch", 0) for e in manifest.files]
+        else:
+            results = promote_all(scratch_fd, artifacts_fd, manifest)
+    finally:
+        os.close(scratch_fd)
+        os.close(artifacts_fd)
+
+    report = {
+        "command_exit": command_exit,
+        "interrupted": interrupted,
+        "containers_left": left,
+        "promoted": [{"path": r.path, "bytes": r.bytes} for r in results if r.status == "promoted"],
+        "rejected": [{"path": r.path, "reason": r.reason} for r in results if r.status == "rejected"],
+    }
+    print(json.dumps(report, ensure_ascii=False))
+    if left:
+        return 3
+    return 1 if report["rejected"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
