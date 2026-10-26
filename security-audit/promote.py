@@ -90,23 +90,26 @@ def split_rel_path(rel: str) -> list:
     return parts
 
 
-def _open_dir(parent_fd: int, name: str, code: str) -> int:
+def _open_source_dir(parent_fd: int, name: str, rel: str) -> int:
     try:
         return os.open(name, DIR_FLAGS, dir_fd=parent_fd)
     except OSError as e:
         if e.errno == errno.ENOENT:
-            raise PromoteError(f"missing: {name}") from None
+            raise PromoteError(f"missing: {rel}") from None
         if e.errno in (errno.ELOOP, errno.ENOTDIR):
-            raise PromoteError(f"{code}: {name}") from None
-        raise PromoteError(f"{code}: {name}: {e.strerror}") from None
+            # Ohne zu folgen nachsehen, was an dieser Stelle liegt.
+            st = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            code = "symlink" if stat.S_ISLNK(st.st_mode) else "not-dir"
+            raise PromoteError(f"{code}: {rel}: {name}") from None
+        raise PromoteError(f"not-dir: {rel}: {name}: {e.strerror}") from None
 
 
-def _walk_source(scratch_fd: int, parts: list) -> int:
+def _walk_source(scratch_fd: int, parts: list, rel: str) -> int:
     """Schritt 2: Elternordner einzeln no-follow vom Scratch-Deskriptor aus öffnen."""
     fd = os.dup(scratch_fd)
     try:
         for name in parts:
-            nxt = _open_dir(fd, name, "symlink")
+            nxt = _open_source_dir(fd, name, rel)
             os.close(fd)
             fd = nxt
         return fd
@@ -175,7 +178,7 @@ def promote_file(
     Ein halb geschriebenes Ziel entfernt diese Funktion selbst (Schritt 11).
     """
     parts = split_rel_path(entry.path)
-    src_dir = _walk_source(scratch_fd, parts[:-1])
+    src_dir = _walk_source(scratch_fd, parts[:-1], entry.path)
     try:
         # Schritt 3: Blatt no-follow und nonblocking öffnen.
         try:

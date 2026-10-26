@@ -183,7 +183,7 @@ Drei Unterbefehle. Der Parent ruft sie nacheinander auf.
 - Startet den Test-Container mit diesen Optionen:
   - `--network container:<pg>`; ohne Postgres `--network none`.
   - `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`,
-    `--user 65534:65534`, `--init`.
+    `--user 65534:65534`. Kein `--init` (Nachtrag 2026-10-26: sonst zeigt `/proc/1/environ` die Image-Umgebung).
   - `--cpus`, `--memory`, `--memory-swap` (gleich `--memory`),
     `--pids-limit`, `--ulimit fsize=<bytes>`, `--ulimit nofile`.
   - Mounts: `src/` → `/src:ro`, `scratch/` → `/scratch`, je Unterpfad

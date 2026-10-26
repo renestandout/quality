@@ -19,7 +19,12 @@ make_repo() {
     printf '<?php\n' > app.php
     printf 'ignored.txt\nstorage/*.key\n.env\n.env.*\n/vendor/\n/public/build/\n' > .gitignore
     : > storage/logs/.gitkeep
+    # Eingebettetes Repo als gitlink, wie ein Submodul.
+    mkdir sub && (cd sub && git init -q && printf 'x\n' > s.txt && printf 'geheim\n' > ignoriert.txt &&
+      printf 'ignoriert.txt\n' > .gitignore && git add s.txt .gitignore &&
+      git -c user.name=t -c user.email=t@example.invalid commit -q -m sub)
     git add app.php .gitignore storage/logs/.gitkeep
+    git add sub 2>/dev/null
     git -c user.name=t -c user.email=t@example.invalid commit -q -m init
     printf '<?php // neu\n' > new.php
     printf 'geheim\n' > ignored.txt
@@ -121,6 +126,39 @@ label_is_canonical() {
   assert_eq "$a" "$c" "Label mit doppeltem Schrägstrich"
 }
 
+prepare_skips_submodule_with_warning() {
+  local err
+  err="$(prepare_agent subm 2>&1 >/dev/null)"
+  [ -f "$AGENTS/subm/src/app.php" ] || fail "src/ fehlt"
+  [ ! -e "$AGENTS/subm/src/sub" ] || fail "Submodul wurde kopiert"
+  assert_contains "$err" "sub"
+  assert_contains "$err" "--include"
+}
+
+prepare_failure_leaves_nothing_mounted() {
+  assert_exit 91 prepare_agent fail --rw gibtsnicht
+  if mount | grep -q "agents/fail/scratch"; then fail "scratch/ blieb eingehängt"; fi
+  prepare_agent fail >/dev/null || fail "zweiter Versuch scheiterte"
+}
+
+prepare_failure_after_mount_cleans_up() {
+  local rc=0
+  mkdir -p "$REPO/geschuetzt"
+  printf 'x' > "$REPO/geschuetzt/datei"
+  chmod 000 "$REPO/geschuetzt/datei"
+  prepare_agent late --include geschuetzt >/dev/null 2>&1 || rc=$?
+  chmod 600 "$REPO/geschuetzt/datei"
+  rm -rf "$REPO/geschuetzt"
+  [ "$rc" -ne 0 ] || fail "prepare meldete Erfolg trotz unlesbarer Datei"
+  if mount | grep -q "agents/late/scratch"; then fail "scratch/ blieb eingehängt"; fi
+  [ ! -e "$AGENTS/late" ] || fail "Agent-Root blieb liegen"
+}
+
+prepare_refuses_comma_or_quote_in_root() {
+  assert_exit 91 "$SANDBOX" prepare --agent-root "$BASE/run,1/agents/a" --target "$REPO"
+  assert_exit 91 "$SANDBOX" prepare --agent-root "$BASE/run\"1/agents/a" --target "$REPO"
+}
+
 prepare_refuses_outside_audit_root() {
   assert_exit 91 "$SANDBOX" prepare --agent-root "$HOME/sa-ausserhalb/agents/a" --target "$REPO"
   [ ! -e "$HOME/sa-ausserhalb" ] || fail "Ordner ausserhalb wurde angelegt"
@@ -162,6 +200,10 @@ run_case prepare_writes_source_ref
 run_case prepare_mirrors_rw_dirs
 run_case prepare_includes_extra_paths
 run_case prepare_rejects_include_outside_repo
+run_case prepare_skips_submodule_with_warning
+run_case prepare_failure_leaves_nothing_mounted
+run_case prepare_failure_after_mount_cleans_up
+run_case prepare_refuses_comma_or_quote_in_root
 run_case label_is_canonical
 run_case prepare_refuses_outside_audit_root
 run_case prepare_refuses_bad_agent_id

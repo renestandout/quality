@@ -92,6 +92,10 @@ Der Agent-Root folgt dem Skill:
      `.env`, `.env.*`, `.env-*`, `*.env`, `.envrc`, `auth.json`, `.npmrc`,
      `.netrc`, `.pgpass`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `id_rsa*`,
      `id_ecdsa*`, `id_ed25519*`, `id_dsa*`.
+   - Submodule und eingebettete Repos fehlen in `src/`. `prepare` nennt sie in
+     einem Hinweis. Mit `--include <pfad>` lassen sie sich übernehmen.
+   - Scheitert `prepare`, räumt es Image, Kopie und Agent-Root selbst weg.
+   - Der Agent-Root darf kein Komma und kein `"` enthalten (`docker --mount`).
    - `--rw PATH` spiegelt die Ordner von `PATH` nach `scratch/rw/PATH`. `exec`
      hängt sie beschreibbar über `src/PATH`.
    - Schreibt `src.ref.json` mit Commit und Dirty-Status.
@@ -141,7 +145,7 @@ Ein vollständiges Beispiel ist `tests/probe-rankscan.sh`.
 | Kontrolle | Umsetzung | Default | Option |
 |---|---|---|---|
 | Netz | Test-Container im Netz-Namespace von Postgres (`--network none`), sonst `--network none`; nur `lo` | – | – |
-| Umgebung | `env -i` mit genau den Schlüsseln aus `--env-file`; `PATH`, `HOME`, `TMPDIR` Pflicht | – | `--env-file` |
+| Umgebung | `env -i` mit genau den Schlüsseln aus `--env-file`; `PATH`, `HOME`, `TMPDIR` Pflicht; `HOME`, `TMPDIR`, `XDG_*`, `COMPOSER_HOME`, `COMPOSER_CACHE_DIR` müssen auf `/scratch` zeigen | – | `--env-file` |
 | Dateisystem | `--read-only`, `src/` als `/src:ro`, einziger Schreibort `/scratch` | – | `--rw` |
 | CPU | `--cpus` | 2 | `--cpus` |
 | Speicher | `--memory`, Swap gleich Speicher | 1 GB | `--memory` |
@@ -178,7 +182,7 @@ Sandbox vorhanden. Zielcode führst du nur über diese Befehle aus:
 - Aufräumen: <quality>/security-audit/sandbox-run.sh cleanup
 Anleitung: <quality>/security-audit/README.md, Abschnitt «Ablauf pro Agent».
 
-Erfüllte Kontrollen (Abnahmetest grün am <Datum>, 18 Fälle):
+Erfüllte Kontrollen (Abnahmetest grün am <Datum>, 20 Fälle):
 - Kein Netz nach aussen. Nur Loopback zu Postgres und Redis im selben Namespace.
 - Leere Umgebung aus einer Allowlist mit Dummy-Werten; HOME, TMPDIR und Caches auf scratch/.
 - Root-Dateisystem und Quelle nur lesbar; einziger Schreibort ist scratch/.
@@ -216,6 +220,9 @@ Teilauswahl schreibt keinen Nachweis.
 - `exec` leert vor jedem Lauf die Caches der Audit-VM. Sonst verwechselt
   virtiofs ein neues Scratch-Image mit einem früheren: Jede Image-Wurzel hat
   dieselbe Inode, und macOS vergibt Disk-Nummern neu.
+- Der Test-Container läuft ohne `--init`. So zeigt auch `/proc/1/environ` nur
+  die Allowlist. Verwaiste Zombie-Prozesse räumt bis zum Ende des Containers
+  niemand weg. Für kurze Läufe ist das unkritisch.
 - Die Installation als Claude-Code-Plugin klont das ganze Repo. Dort liegt
   `security-audit/` mit. Die Hooks des Plugins rufen es nicht auf.
 - Laufen zwei Audits gleichzeitig, teilen sie sich die Audit-VM. Die Agent-Roots

@@ -57,6 +57,8 @@ valid_agent_id() {
 check_agent_root() { # pfad
   local root audit
   [[ "$1" = /* ]] || die 91 "--agent-root muss absolut sein: $1"
+  # Komma und Anführungszeichen brechen die Optionen von docker --mount.
+  [[ "$1" != *[,\"]* ]] || die 91 "--agent-root darf kein Komma und kein Anführungszeichen enthalten: $1"
   root="$(realpath_py "$1")"
   audit="$(realpath_py "$AUDIT_ROOT")"
   [[ "$root" = "$audit"/?* ]] || die 91 "--agent-root muss unter $AUDIT_ROOT liegen: $1"
@@ -106,6 +108,11 @@ source_files() { # ziel [include-pfad]...
     done
   } | while IFS= read -r -d '' f; do
     [ -e "$target/$f" ] || [ -L "$target/$f" ] || continue # gelöscht, aber noch versioniert
+    if [ -d "$target/$f" ] && [ ! -L "$target/$f" ]; then
+      # Ein Ordner in ls-files ist ein Submodul oder eingebettetes Repo.
+      echo "sandbox-run.sh: Hinweis: $f ist ein Submodul und fehlt in src/. Bei Bedarf mit --include $f übernehmen." >&2
+      continue
+    fi
     is_denied "$f" && continue
     printf '%s\0' "$f"
   done
@@ -133,6 +140,20 @@ cmd_prepare() {
   if [ -e "$root" ] && [ -n "$(ls -A "$root")" ]; then
     die 91 "Agent-Root existiert schon und ist nicht leer: $root"
   fi
+  if [ "${#rw[@]}" -gt 0 ]; then
+    for p in "${rw[@]}"; do
+      [ -d "$target/$p" ] && [ ! -L "$target/$p" ] || die 91 "--rw $p ist im Ziel-Repo kein Ordner"
+    done
+  fi
+  if [ "${#includes[@]}" -gt 0 ]; then
+    for p in "${includes[@]}"; do
+      [ -e "$target/$p" ] || die 91 "--include $p fehlt im Ziel-Repo"
+    done
+  fi
+
+  # Scheitert prepare ab hier, räumt der Trap alles weg. Ein neuer Versuch auf
+  # demselben Agent-Root ist dann möglich.
+  trap 'rc=$?; if [ "$rc" -ne 0 ]; then cmd_cleanup --agent-root "$root" >/dev/null 2>&1; rm -rf "$root"; fi' EXIT
 
   src="$root/src"
   scratch="$root/scratch"
@@ -148,7 +169,6 @@ cmd_prepare() {
   done
   if [ "${#rw[@]}" -gt 0 ]; then
     for p in "${rw[@]}"; do
-      [ -d "$target/$p" ] || die 91 "--rw $p ist im Ziel-Repo kein Ordner"
       (cd "$target" && find "$p" -type d -print0) | while IFS= read -r -d '' d; do
         mkdir -p -m 0777 "$scratch/rw/$d"
       done
@@ -162,10 +182,7 @@ cmd_prepare() {
     -o -name .npmrc -o -name .netrc -o -name .pgpass -o -name '*.key' -o -name '*.pem' -o -name '*.p12' \
     -o -name '*.pfx' -o -name 'id_rsa*' -o -name 'id_ecdsa*' -o -name 'id_ed25519*' -o -name 'id_dsa*' \) \
     -print | head -5 || true)"
-  if [ -n "$hit" ]; then
-    cmd_cleanup --agent-root "$root" >/dev/null 2>&1 || true
-    die 91 "Denylist-Treffer in der Quellkopie: $hit"
-  fi
+  [ -z "$hit" ] || die 91 "Denylist-Treffer in der Quellkopie: $hit"
   chmod -R a+rX "$src"
 
   python3 -I -c '
@@ -299,6 +316,12 @@ raise SystemExit(0 if mounts == [sys.argv[2]] else 1)
     case "$line" in "" | "#"*) continue ;; esac
     key="${line%%=*}"
     [[ "$line" = *=* && "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || die 90 "env-file: ungültige Zeile: $line"
+    case "$key" in
+      HOME | TMPDIR | XDG_CACHE_HOME | XDG_CONFIG_HOME | XDG_DATA_HOME | COMPOSER_HOME | COMPOSER_CACHE_DIR)
+        [[ "${line#*=}" = /scratch || "${line#*=}" = /scratch/* ]] ||
+          die 90 "env-file: $key muss auf /scratch zeigen: ${line#*=}"
+        ;;
+    esac
     envs+=("$line")
     keys="$keys$key "
   done <"$env_file"
@@ -349,8 +372,10 @@ raise SystemExit(0 if mounts == [sys.argv[2]] else 1)
 
   # Wall-Clock: timeout im Container, dazu ein Wächter auf dem Host.
   # docker run läuft im Hintergrund, damit die Traps sofort greifen.
+  # Kein --init: So ist PID 1 der Prozess, den env -i mit leerer Umgebung
+  # startet. Mit docker-init zeigte /proc/1/environ die Image-Umgebung.
   local rc=0 child
-  docker --context "$DOCKER_CONTEXT" run --name "sa-$label-test" "${harden[@]}" --init \
+  docker --context "$DOCKER_CONTEXT" run --name "sa-$label-test" "${harden[@]}" \
     --network "$net" --user 65534:65534 --workdir "$workdir" \
     --cpus "$cpus" --memory "$memory" --memory-swap "$memory" --pids-limit "$pids" \
     --ulimit "fsize=$fsize:$fsize" --ulimit nofile=1024:1024 \

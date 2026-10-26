@@ -159,6 +159,15 @@ class PromoteFileTest(Fixture):
         self.assertTrue(str(ctx.exception).split(":")[0] in ("dest-not-dir", "symlink"), str(ctx.exception))
         self.assertEqual(os.listdir(elsewhere), [])
 
+    def test_file_in_parent_position_is_not_dir(self) -> None:
+        self.write("out/datei", b"x")
+        self.assert_rejected("not-dir", "out/datei/a.txt")
+
+    def test_missing_parent_names_whole_entry(self) -> None:
+        with self.assertRaises(PromoteError) as ctx:
+            self.promote("gibt/es/nicht.txt")
+        self.assertEqual(str(ctx.exception), "missing: gibt/es/nicht.txt")
+
     def test_missing_file_is_rejected_others_promoted(self) -> None:
         self.write("out/a.txt", b"x")
         manifest = Manifest((Entry("out/missing", 10), Entry("out/a.txt", 10)), 100)
@@ -260,6 +269,34 @@ class CliTest(Fixture):
         rc, report = self.run_cli("/gibt/es/nicht")
         self.assertEqual(report["command_exit"], 127)
         self.assertEqual(rc, 1)
+
+    def fake_docker(self, output: str, code: int = 0) -> dict:
+        bindir = os.path.join(self.base, "bin")
+        os.makedirs(bindir, exist_ok=True)
+        path = os.path.join(bindir, "docker")
+        with open(path, "w") as f:
+            f.write(f"#!/bin/sh\nprintf '%s' {output!r}\nexit {code}\n")
+        os.chmod(path, 0o755)
+        return {**os.environ, "PATH": bindir + os.pathsep + os.environ.get("PATH", "")}
+
+    def test_containers_left_detects_running(self) -> None:
+        env = self.fake_docker("abc123\n")
+        old = os.environ["PATH"]
+        os.environ["PATH"] = env["PATH"]
+        try:
+            self.assertTrue(promote.containers_left("security-audit.agent=x"))
+        finally:
+            os.environ["PATH"] = old
+
+    def test_containers_left_empty_and_docker_error(self) -> None:
+        old = os.environ["PATH"]
+        try:
+            os.environ["PATH"] = self.fake_docker("")["PATH"]
+            self.assertFalse(promote.containers_left("security-audit.agent=x"))
+            os.environ["PATH"] = self.fake_docker("", 1)["PATH"]
+            self.assertTrue(promote.containers_left("security-audit.agent=x"))
+        finally:
+            os.environ["PATH"] = old
 
     def test_cli_requires_container_check_choice(self) -> None:
         rc, _ = self.run_cli(*self.writer(), label=())

@@ -99,13 +99,43 @@ network_loopback_to_redis() {
 }
 
 env_only_allowlist() {
-  local root out want got
+  local root out pid1 want got
   root="$(agent env)"
   out="$(sx "$root" -- env)"
+  # PID 1 ohne Shell lesen: eine Shell würde selbst PWD setzen.
+  pid1="$(sx "$root" -- sed -z 's/$/\n/' /proc/1/environ)"
   finish_agent "$root"
   want="$(grep -v '^#' "$ENV_FILE" | grep '=' | cut -d= -f1 | sort | tr '\n' ' ')"
-  got="$(printf '%s\n' "$out" | grep -v '^EXIT=' | grep '=' | cut -d= -f1 | sort | tr '\n' ' ')"
+  got="$(printf '%s\n' "$out" | grep -v '^sandbox-run.sh' | grep -v '^EXIT=' | grep '=' | cut -d= -f1 | sort | tr '\n' ' ')"
   assert_eq "$want" "$got" "Umgebung"
+  # Auch PID 1 darf keine Image-Umgebung und kein HOSTNAME zeigen.
+  got="$(printf '%s\n' "$pid1" | grep -v '^sandbox-run.sh' | grep -v '^EXIT=' | grep '=' | cut -d= -f1 | sort | tr '\n' ' ')"
+  assert_eq "$want" "$got" "Umgebung von PID 1"
+}
+
+env_paths_must_point_to_scratch() {
+  local root out rc=0 bad="$ACC/env-falsch.env"
+  root="$(agent envpath)"
+  sed 's|^HOME=.*|HOME=/home/x|' "$ENV_FILE" > "$bad"
+  out="$("$SANDBOX" exec --agent-root "$root" --image "$IMAGE" --env-file "$bad" \
+    --unverified-for-acceptance -- true 2>&1)" || rc=$?
+  rm -f "$bad"
+  finish_agent "$root"
+  assert_eq 90 "$rc" "Exit bei HOME ausserhalb von /scratch"
+  assert_contains "$out" "HOME"
+}
+
+# Leerzeichen und Umlaut im Pfad des Agent-Roots, mit --rw-Mount.
+paths_with_space_and_umlaut() {
+  local root out
+  root="$ACC/rün 1/agents/space"
+  "$SANDBOX" cleanup --agent-root "$root" >/dev/null 2>&1
+  rm -rf "$ACC/rün 1"
+  "$SANDBOX" prepare --agent-root "$root" --target "$REPO" --scratch-size 64m --rw data >/dev/null
+  out="$(sx "$root" --rw data -- sh -c 'touch /scratch/out/x && touch /src/data/y && echo PFAD-OK')"
+  finish_agent "$root"
+  rm -rf "$ACC/rün 1"
+  assert_contains "$out" "PFAD-OK"
 }
 
 readonly_src_and_root() {
@@ -297,7 +327,8 @@ cleanup_after_sigterm() {
 # --- Ablauf ----------------------------------------------------------------
 
 ALL_CASES="guard_refuses_without_proof guard_detects_fingerprint_mismatch network_external_blocked
-  network_loopback_to_pg network_loopback_to_redis env_only_allowlist readonly_src_and_root scratch_visible_in_sequence hardening
+  network_loopback_to_pg network_loopback_to_redis env_only_allowlist env_paths_must_point_to_scratch
+  paths_with_space_and_umlaut readonly_src_and_root scratch_visible_in_sequence hardening
   vm_sees_only_audit_root pids_limit memory_oom fsize_limit disk_limit timeout_kills promote_end_to_end
   rw_symlink_refused cleanup_after_sigterm"
 PROOF="$HOME/security-audit-skill/.sandbox-acceptance.json"
