@@ -2,7 +2,11 @@
 # Sandbox für den security-audit-Skill.
 #
 #   sandbox-run.sh prepare --agent-root DIR --target REPO [--scratch-size 512m] [--rw PATH]...
+#   sandbox-run.sh exec --agent-root DIR --image IMG --env-file FILE [--pg IMG] [--redis IMG]
+#                       [--cpus N] [--memory SIZE] [--pids N] [--fsize SIZE] [--timeout SEK]
+#                       [--rw PATH]... [--workdir DIR] [--unverified-for-acceptance] -- BEFEHL...
 #   sandbox-run.sh cleanup --agent-root DIR
+#   sandbox-run.sh fingerprint
 #
 # Nur der Parent eines Audit-Laufs ruft dieses Skript auf. Details: README.md.
 # Exit-Codes: 2 Aufruffehler, 3 Vorbedingung verweigert.
@@ -12,6 +16,8 @@ set -euo pipefail
 AUDIT_ROOT="$HOME/security-audit-skill"
 DOCKER_CONTEXT="colima-audit"
 SCRATCH_DIRS="home tmp cache input out rw"
+ACCEPTANCE_FILE="${SANDBOX_ACCEPTANCE_FILE:-$AUDIT_ROOT/.sandbox-acceptance.json}"
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
 die() { # code meldung
   echo "sandbox-run.sh: $2" >&2
@@ -143,6 +149,191 @@ print(json.dumps({"commit": sys.argv[1], "dirty": sys.argv[2] != "", "target": s
   echo "prepare: $root"
 }
 
+to_bytes() { # 64m | 1g | 512k | 1024
+  local n="${1%[kKmMgG]}" unit="${1##*[0-9]}"
+  [[ "$n" =~ ^[0-9]+$ ]] || die 2 "Grösse wie 64m oder 1g angeben: $1"
+  case "$unit" in
+    "") echo "$n" ;;
+    k | K) echo $((n * 1024)) ;;
+    m | M) echo $((n * 1024 * 1024)) ;;
+    g | G) echo $((n * 1024 * 1024 * 1024)) ;;
+  esac
+}
+
+# Merkmale der Laufzeit, an die der Abnahme-Nachweis gebunden ist.
+cmd_fingerprint() {
+  local colima docker_version images mounts sha
+  colima="$(colima version 2>/dev/null | awk 'NR==1 {print $3}')"
+  docker_version="$(docker --context "$DOCKER_CONTEXT" version --format '{{.Server.Version}}' 2>/dev/null)" ||
+    die 3 "Docker-Kontext $DOCKER_CONTEXT nicht erreichbar. Läuft «colima start -p audit»?"
+  images="$(docker --context "$DOCKER_CONTEXT" images --no-trunc --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort)"
+  mounts="$(colima ssh -p audit -- findmnt -t virtiofs -n -o TARGET 2>/dev/null | sort)"
+  sha="$(shasum -a 256 "$SELF" | cut -d' ' -f1)"
+  python3 -I -c '
+import json, sys
+images = dict(line.split(" ", 1) for line in sys.argv[3].splitlines() if line)
+mounts = [m for m in sys.argv[4].splitlines() if m]
+print(json.dumps({"colima_version": sys.argv[1], "docker_server_version": sys.argv[2],
+                  "images": images, "sandbox_run_sha256": sys.argv[5], "vm_mounts": mounts}, sort_keys=True))
+' "$colima" "$docker_version" "$images" "$mounts" "$sha"
+}
+
+# Prüft den Nachweis gegen den aktuellen Fingerprint. Gibt bei Abweichung den Grund aus.
+proof_mismatch() { # fingerprint-json
+  python3 -I -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        proof = json.load(f)
+except (OSError, ValueError) as e:
+    print(f"kein gültiger Abnahme-Nachweis unter {sys.argv[1]}: {e}")
+    raise SystemExit(0)
+if proof.get("result") != "green":
+    print("Abnahme-Nachweis ist nicht grün")
+    raise SystemExit(0)
+fp = json.loads(sys.argv[2])
+diff = [k for k in sorted(fp) if proof.get(k) != fp[k]]
+if diff:
+    print("Abnahme-Nachweis passt nicht mehr, geändert: " + ", ".join(diff))
+' "$ACCEPTANCE_FILE" "$1"
+}
+
+remove_containers() { # label
+  local ids
+  ids="$(docker --context "$DOCKER_CONTEXT" ps -aq --filter "label=security-audit.agent=$1" 2>/dev/null)" || return 0
+  [ -z "$ids" ] || docker --context "$DOCKER_CONTEXT" rm -f $ids >/dev/null 2>&1 || true
+}
+
+cmd_exec() {
+  local agent_root="" image="" env_file="" pg="" redis="" cpus=2 memory=1g pids=256 fsize=64m timeout=300
+  local workdir=/src unverified=0 rw=() root label fp mismatch line key envs=() keys=" " p
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --agent-root) agent_root="${2:-}"; shift 2 ;;
+      --image) image="${2:-}"; shift 2 ;;
+      --env-file) env_file="${2:-}"; shift 2 ;;
+      --pg) pg="${2:-}"; shift 2 ;;
+      --redis) redis="${2:-}"; shift 2 ;;
+      --cpus) cpus="${2:-}"; shift 2 ;;
+      --memory) memory="${2:-}"; shift 2 ;;
+      --pids) pids="${2:-}"; shift 2 ;;
+      --fsize) fsize="${2:-}"; shift 2 ;;
+      --timeout) timeout="${2:-}"; shift 2 ;;
+      --rw) check_rel_path "${2:-}"; rw+=("$2"); shift 2 ;;
+      --workdir) workdir="${2:-}"; shift 2 ;;
+      --unverified-for-acceptance) unverified=1; shift ;;
+      --) shift; break ;;
+      *) die 2 "exec: unbekannte Option $1" ;;
+    esac
+  done
+  [ $# -gt 0 ] || die 2 "exec: Befehl nach -- fehlt"
+  [ -n "$agent_root" ] && [ -n "$image" ] && [ -n "$env_file" ] || die 2 "exec braucht --agent-root, --image und --env-file"
+  [ -z "$redis" ] || [ -n "$pg" ] || die 2 "--redis braucht --pg, Redis teilt dessen Netz-Namespace"
+  [[ "$timeout" =~ ^[0-9]+$ && "$pids" =~ ^[0-9]+$ ]] || die 2 "--timeout und --pids als ganze Zahl angeben"
+  [[ "$cpus" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die 2 "--cpus als Zahl angeben: $cpus"
+  memory="$(to_bytes "$memory")"
+  fsize="$(to_bytes "$fsize")"
+
+  root="$(check_agent_root "$agent_root")"
+  [[ "$root" != *,* ]] || die 3 "Agent-Root darf kein Komma enthalten (docker --mount)"
+  is_mounted "$root/scratch" || die 3 "scratch/ ist nicht eingehängt. Zuerst «prepare» aufrufen."
+  [ -d "$root/src" ] || die 3 "src/ fehlt. Zuerst «prepare» aufrufen."
+
+  fp="$(cmd_fingerprint)"
+  python3 -I -c '
+import json, sys
+mounts = json.loads(sys.argv[1])["vm_mounts"]
+raise SystemExit(0 if mounts == [sys.argv[2]] else 1)
+' "$fp" "$AUDIT_ROOT" || die 3 "Die Audit-VM hängt mehr oder anderes ein als $AUDIT_ROOT. Siehe README.md."
+  if [ "$unverified" = 1 ]; then
+    echo "sandbox-run.sh: Warnung: Lauf ohne Abnahme-Nachweis (nur für acceptance.sh)" >&2
+  else
+    mismatch="$(proof_mismatch "$fp")"
+    [ -z "$mismatch" ] || die 3 "$mismatch. Zuerst tests/acceptance.sh laufen lassen."
+  fi
+
+  # Jedes Scratch-Image hat als Wurzel dieselbe Inode, und macOS vergibt
+  # Disk-Nummern neu. Die VM hält sonst einen veralteten Eintrag für ein
+  # früheres Image. Deshalb die Caches der Audit-VM leeren und prüfen.
+  colima ssh -p audit -- sudo sh -c 'sync; echo 2 > /proc/sys/vm/drop_caches' ||
+    die 3 "Caches der Audit-VM liessen sich nicht leeren"
+  colima ssh -p audit -- test -d "$root/scratch/out" -a -d "$root/src" ||
+    die 3 "Die Audit-VM sieht scratch/ oder src/ nicht: $root"
+
+  # Leere Umgebung: nur die Schlüssel aus dem env-file, über env -i im Container.
+  [ -f "$env_file" ] || die 2 "env-file fehlt: $env_file"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in "" | "#"*) continue ;; esac
+    key="${line%%=*}"
+    [[ "$line" = *=* && "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || die 2 "env-file: ungültige Zeile: $line"
+    envs+=("$line")
+    keys="$keys$key "
+  done <"$env_file"
+  for key in PATH HOME TMPDIR; do
+    [[ "$keys" = *" $key "* ]] || die 2 "env-file: $key fehlt"
+  done
+
+  label="$(agent_label "$root")"
+  # shellcheck disable=SC2064 # Label jetzt festhalten.
+  trap "remove_containers '$label'" EXIT
+  trap "remove_containers '$label'; exit 143" TERM
+  trap "remove_containers '$label'; exit 130" INT
+  remove_containers "$label"
+
+  local harden=(--label "security-audit.agent=$label" --pull never --read-only --cap-drop ALL
+    --security-opt no-new-privileges)
+  local net=none
+  if [ -n "$pg" ]; then
+    docker --context "$DOCKER_CONTEXT" run -d --name "sa-$label-pg" "${harden[@]}" --network none \
+      --user postgres --cpus 1 --memory 512m --memory-swap 512m --pids-limit 128 \
+      --tmpfs /var/lib/postgresql/data:rw,size=256m,uid=999,gid=999,mode=0700 \
+      --tmpfs /var/run/postgresql:rw,size=1m,uid=999,gid=999 \
+      --tmpfs /tmp:rw,size=16m,uid=999,gid=999 \
+      -e POSTGRES_USER=db -e POSTGRES_PASSWORD=db -e POSTGRES_DB=db_test "$pg" >/dev/null
+    local i=0
+    until docker --context "$DOCKER_CONTEXT" exec "sa-$label-pg" pg_isready -q -h 127.0.0.1 -U db -d db_test 2>/dev/null; do
+      i=$((i + 1))
+      [ "$i" -le 30 ] || die 3 "Postgres wurde in 30 s nicht bereit"
+      sleep 1
+    done
+    net="container:sa-$label-pg"
+  fi
+  if [ -n "$redis" ]; then
+    docker --context "$DOCKER_CONTEXT" run -d --name "sa-$label-redis" "${harden[@]}" --network "$net" \
+      --user redis --cpus 1 --memory 512m --memory-swap 512m --pids-limit 128 \
+      --tmpfs /data:rw,size=64m,uid=999,gid=999 \
+      "$redis" redis-server --save '' --appendonly no --bind 127.0.0.1 >/dev/null
+  fi
+
+  local mounts=(--mount "type=bind,src=$root/src,dst=/src,readonly" --mount "type=bind,src=$root/scratch,dst=/scratch")
+  if [ "${#rw[@]}" -gt 0 ]; then
+    for p in "${rw[@]}"; do
+      [ -d "$root/scratch/rw/$p" ] || die 3 "--rw $p wurde bei prepare nicht angelegt"
+      [ -d "$root/src/$p" ] || die 3 "--rw $p: Mountpunkt fehlt in src/"
+      mounts+=(--mount "type=bind,src=$root/scratch/rw/$p,dst=/src/$p")
+    done
+  fi
+
+  # Wall-Clock: timeout im Container, dazu ein Wächter auf dem Host.
+  # docker run läuft im Hintergrund, damit die Traps sofort greifen.
+  local rc=0 child watchdog
+  docker --context "$DOCKER_CONTEXT" run --name "sa-$label-test" "${harden[@]}" --init \
+    --network "$net" --user 65534:65534 --workdir "$workdir" \
+    --cpus "$cpus" --memory "$memory" --memory-swap "$memory" --pids-limit "$pids" \
+    --ulimit "fsize=$fsize:$fsize" --ulimit nofile=1024:1024 \
+    --env-file "$env_file" "${mounts[@]}" --entrypoint /usr/bin/env \
+    "$image" -i "${envs[@]}" timeout --kill-after=5 "$timeout" "$@" </dev/null &
+  child=$!
+  (
+    sleep $((timeout + 15))
+    docker --context "$DOCKER_CONTEXT" kill "sa-$label-test" >/dev/null 2>&1
+  ) </dev/null >/dev/null 2>&1 &
+  watchdog=$!
+  wait "$child" || rc=$?
+  kill "$watchdog" 2>/dev/null || true
+  return "$rc"
+}
+
 cmd_cleanup() {
   local agent_root="" root ids
   while [ $# -gt 0 ]; do
@@ -168,11 +359,13 @@ cmd_cleanup() {
   echo "cleanup: $root"
 }
 
-[ $# -gt 0 ] || die 2 "Unterbefehl fehlt: prepare | cleanup"
+[ $# -gt 0 ] || die 2 "Unterbefehl fehlt: prepare | exec | cleanup | fingerprint"
 sub="$1"
 shift
 case "$sub" in
   prepare) cmd_prepare "$@" ;;
+  exec) cmd_exec "$@" ;;
   cleanup) cmd_cleanup "$@" ;;
+  fingerprint) cmd_fingerprint ;;
   *) die 2 "unbekannter Unterbefehl: $sub" ;;
 esac
