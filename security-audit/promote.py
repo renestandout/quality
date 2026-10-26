@@ -260,3 +260,90 @@ def promote_all(
         remaining -= n
         results.append(Result(entry.path, "promoted", None, n))
     return results
+
+
+def open_roots(scratch: str, artifacts: str) -> tuple:
+    """Öffnet beide Wurzeln. Python setzt O_CLOEXEC, der Kindprozess erbt sie nicht."""
+    scratch_fd = os.open(scratch, DIR_FLAGS)
+    try:
+        artifacts_fd = os.open(artifacts, DIR_FLAGS)
+    except BaseException:
+        os.close(scratch_fd)
+        raise
+    for fd in (scratch_fd, artifacts_fd):
+        os.set_inheritable(fd, False)
+    return scratch_fd, artifacts_fd
+
+
+def containers_left(label: str) -> bool:
+    import subprocess
+
+    proc = subprocess.run(
+        ["docker", "--context", "colima-audit", "ps", "-aq", "--filter", f"label={label}"],
+        capture_output=True, text=True,
+    )
+    # Kann Docker nicht antworten, gilt der Lauf als nicht sicher beendet.
+    return proc.returncode != 0 or bool(proc.stdout.strip())
+
+
+def main(argv: Optional[list] = None) -> int:
+    import argparse
+    import subprocess
+    import sys
+
+    parser = argparse.ArgumentParser(
+        description="Startet einen Sandbox-Lauf und übernimmt danach erlaubte Dateien aus scratch/ nach artifacts/.",
+    )
+    parser.add_argument("--scratch", required=True)
+    parser.add_argument("--artifacts", required=True)
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--container-label", help="Label der Sandbox-Container; nach dem Lauf darf keiner übrig sein.")
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args(argv)
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if not command:
+        parser.error("Befehl nach -- fehlt")
+
+    try:
+        manifest = load_manifest(args.manifest)
+    except (OSError, ValueError) as e:
+        print(f"promote.py: {e}", file=sys.stderr)
+        return 2
+    try:
+        if os.listdir(args.artifacts):
+            print("promote.py: artifacts/ ist nicht leer", file=sys.stderr)
+            return 2
+        scratch_fd, artifacts_fd = open_roots(args.scratch, args.artifacts)
+    except OSError as e:
+        print(f"promote.py: {e}", file=sys.stderr)
+        return 2
+
+    try:
+        try:
+            command_exit = subprocess.run(command, close_fds=True).returncode
+        except OSError as e:
+            print(f"promote.py: Befehl nicht startbar: {e}", file=sys.stderr)
+            command_exit = 127
+        left = bool(args.container_label) and containers_left(args.container_label)
+        if left:
+            results = [Result(e.path, "rejected", "containers-left: Sandbox lief noch", 0) for e in manifest.files]
+        else:
+            results = promote_all(scratch_fd, artifacts_fd, manifest)
+    finally:
+        os.close(scratch_fd)
+        os.close(artifacts_fd)
+
+    report = {
+        "command_exit": command_exit,
+        "containers_left": left,
+        "promoted": [{"path": r.path, "bytes": r.bytes} for r in results if r.status == "promoted"],
+        "rejected": [{"path": r.path, "reason": r.reason} for r in results if r.status == "rejected"],
+    }
+    print(json.dumps(report, ensure_ascii=False))
+    if left:
+        return 3
+    return 1 if report["rejected"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

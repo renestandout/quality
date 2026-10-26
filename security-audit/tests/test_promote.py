@@ -195,5 +195,65 @@ class ManifestTest(Fixture):
                     self.load(data)
 
 
+class CliTest(Fixture):
+    def run_cli(self, *cmd: str, manifest: object = None) -> "tuple[int, dict]":
+        import subprocess
+
+        mpath = os.path.join(self.base, "manifest.json")
+        with open(mpath, "w") as f:
+            json.dump(manifest or {"max_total_bytes": 100, "files": [{"path": "out/a.txt", "max_bytes": 100}]}, f)
+        proc = subprocess.run(
+            [sys.executable, "-I", os.path.join(os.path.dirname(HERE), "promote.py"),
+             "--scratch", self.scratch, "--artifacts", self.artifacts, "--manifest", mpath, "--", *cmd],
+            capture_output=True, text=True,
+        )
+        report = json.loads(proc.stdout) if proc.stdout.strip() else {}
+        return proc.returncode, report
+
+    def writer(self, exit_code: int = 0) -> list:
+        target = os.path.join(self.scratch, "out", "a.txt")
+        code = f"open({target!r}, 'w').write('hallo'); raise SystemExit({exit_code})"
+        return [sys.executable, "-c", code]
+
+    def test_cli_runs_command_then_promotes(self) -> None:
+        rc, report = self.run_cli(*self.writer())
+        self.assertEqual(rc, 0)
+        self.assertEqual(report["command_exit"], 0)
+        self.assertEqual(report["promoted"], [{"path": "out/a.txt", "bytes": 5}])
+        self.assertEqual(report["rejected"], [])
+        self.assertFalse(report["containers_left"])
+
+    def test_cli_reports_command_exit_but_still_promotes(self) -> None:
+        rc, report = self.run_cli(*self.writer(7))
+        self.assertEqual(rc, 0)
+        self.assertEqual(report["command_exit"], 7)
+        self.assertEqual(report["promoted"][0]["path"], "out/a.txt")
+
+    def test_cli_exit_1_on_rejection(self) -> None:
+        rc, report = self.run_cli(sys.executable, "-c", "pass")
+        self.assertEqual(rc, 1)
+        self.assertTrue(report["rejected"][0]["reason"].startswith("missing:"))
+
+    def test_cli_rejects_nonempty_artifacts(self) -> None:
+        with open(os.path.join(self.artifacts, "alt"), "w") as f:
+            f.write("x")
+        rc, _ = self.run_cli(*self.writer())
+        self.assertEqual(rc, 2)
+
+    def test_cli_missing_command_reports_127(self) -> None:
+        rc, report = self.run_cli("/gibt/es/nicht")
+        self.assertEqual(report["command_exit"], 127)
+        self.assertEqual(rc, 1)
+
+    def test_open_roots_not_inheritable(self) -> None:
+        s_fd, a_fd = promote.open_roots(self.scratch, self.artifacts)
+        try:
+            self.assertFalse(os.get_inheritable(s_fd))
+            self.assertFalse(os.get_inheritable(a_fd))
+        finally:
+            os.close(s_fd)
+            os.close(a_fd)
+
+
 if __name__ == "__main__":
     unittest.main()
