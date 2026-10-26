@@ -90,6 +90,15 @@ network_loopback_to_pg() {
   assert_contains "$out" "EXIT=0"
 }
 
+network_loopback_to_redis() {
+  local root out
+  root="$(agent redis)"
+  out="$(sx "$root" --pg "$PG_IMAGE" --redis redis:8 -- bash -c 'sleep 2; exec 3<>/dev/tcp/127.0.0.1/6379
+    printf "PING\r\n" >&3; head -c 5 <&3')"
+  finish_agent "$root"
+  assert_contains "$out" "+PONG"
+}
+
 env_only_allowlist() {
   local root out want got
   root="$(agent env)"
@@ -141,6 +150,116 @@ scratch_visible_in_sequence() {
   done
 }
 
+pids_limit() {
+  local root out
+  root="$(agent pids)"
+  out="$(sx "$root" --pids 64 --timeout 90 -- bash -c 'for i in $(seq 1 500); do sleep 30 & done 2>&1 | tail -1
+    echo "--- pids"; cat /sys/fs/cgroup/pids.max /sys/fs/cgroup/pids.events')"
+  finish_agent "$root"
+  assert_contains "$out" "Resource temporarily unavailable"
+  assert_eq 64 "$(printf '%s\n' "$out" | sed -n '/^--- pids$/{n;p;}')" "pids.max"
+  [ "$(printf '%s\n' "$out" | awk '$1 == "max" {print $2}')" -gt 0 ] || fail "pids.events zählt keinen Treffer"
+}
+
+memory_oom() {
+  local root out
+  root="$(agent mem)"
+  out="$(sx "$root" --memory 256m -- sh -c 'head -c 1G /dev/zero | tail; echo "rc=$?"
+    echo "max=$(cat /sys/fs/cgroup/memory.max)"; echo "swap=$(cat /sys/fs/cgroup/memory.swap.max)"
+    cat /sys/fs/cgroup/memory.events')"
+  finish_agent "$root"
+  assert_contains "$out" "max=268435456"
+  assert_contains "$out" "swap=0"
+  assert_not_contains "$out" "rc=0"
+  [ "$(printf '%s\n' "$out" | awk '$1 == "oom_kill" {print $2}')" -ge 1 ] || fail "oom_kill ist 0: $out"
+}
+
+fsize_limit() {
+  local root out
+  root="$(agent fsize)"
+  out="$(sx "$root" --fsize 8m -- sh -c 'dd if=/dev/zero of=/scratch/out/f bs=1M count=32 2>/dev/null; echo "rc=$?"
+    echo "size=$(stat -c %s /scratch/out/f)"')"
+  finish_agent "$root"
+  assert_not_contains "$out" "rc=0"
+  assert_contains "$out" "size=8388608"
+}
+
+disk_limit() {
+  local root out size
+  root="$(agent disk 32m)"
+  out="$(sx "$root" --fsize 128m -- sh -c 'dd if=/dev/zero of=/scratch/out/f bs=1M count=64; echo "rc=$?"
+    echo "size=$(stat -c %s /scratch/out/f)"')"
+  finish_agent "$root"
+  assert_contains "$out" "No space left on device"
+  assert_not_contains "$out" "rc=0"
+  size="$(printf '%s\n' "$out" | sed -n 's/^size=//p')"
+  [ "$size" -lt 33554432 ] || fail "Datei hat $size Bytes, Scratch hat 32 MB"
+}
+
+timeout_kills() {
+  local root out start dur
+  root="$(agent timeout)"
+  start=$(date +%s)
+  out="$(sx "$root" --timeout 5 -- sleep 60)"
+  dur=$(($(date +%s) - start))
+  finish_agent "$root"
+  # 124: timeout im Container hat beendet. Der Host-Wächter (Limit + 15 s)
+  # wäre langsamer und lieferte 137.
+  assert_contains "$out" "EXIT=124"
+  [ "$dur" -lt 15 ] || fail "Lauf dauerte $dur s"
+}
+
+promote_end_to_end() {
+  local root label out rc=0
+  root="$(agent promote)"
+  label="$(printf '%s' "$root" | shasum -a 256 | cut -c1-12)"
+  cat >"$root/manifest.json" <<'JSON'
+{"max_total_bytes": 4096, "files": [
+  {"path": "out/ok.txt", "max_bytes": 1024}, {"path": "out/link", "max_bytes": 1024},
+  {"path": "out/h2.txt", "max_bytes": 1024}, {"path": "out/fifo", "max_bytes": 1024}]}
+JSON
+  out="$(python3 -I "$HERE/../promote.py" --scratch "$root/scratch" --artifacts "$root/artifacts" \
+    --manifest "$root/manifest.json" --container-label "security-audit.agent=$label" -- \
+    "$SANDBOX" exec --agent-root "$root" --image "$IMAGE" --env-file "$ENV_FILE" --unverified-for-acceptance -- \
+    sh -c 'cd /scratch/out && echo inhalt > ok.txt && echo h > h1.txt && ln h1.txt h2.txt &&
+      ln -s /etc/passwd link && mkfifo fifo' 2>/dev/null)" || rc=$?
+  assert_eq 1 "$rc" "Exit von promote.py"
+  assert_eq "inhalt" "$(cat "$root/artifacts/out/ok.txt")" "übernommener Inhalt"
+  for f in link h2.txt fifo; do
+    [ ! -e "$root/artifacts/out/$f" ] && [ ! -L "$root/artifacts/out/$f" ] || fail "$f wurde übernommen"
+  done
+  python3 -I -c '
+import json, sys
+r = json.loads(sys.argv[1])
+assert r["command_exit"] == 0, r
+assert [p["path"] for p in r["promoted"]] == ["out/ok.txt"], r
+reasons = {x["path"]: x["reason"].split(":")[0] for x in r["rejected"]}
+assert reasons == {"out/link": "symlink", "out/h2.txt": "hardlink", "out/fifo": "not-regular"}, reasons
+' "$out" || fail "Bericht: $out"
+  finish_agent "$root"
+}
+
+guard_detects_fingerprint_mismatch() {
+  local root fp out rc=0
+  root="$(agent guard2)"
+  fp="$("$SANDBOX" fingerprint)"
+  python3 -I -c '
+import json, sys
+fp = json.loads(sys.argv[1]); fp.update(result="green", date="test", cases=[])
+json.dump(fp, open(sys.argv[2], "w"))
+fp["sandbox_run_sha256"] = "0" * 64
+json.dump(fp, open(sys.argv[3], "w"))
+' "$fp" "$ACC/proof-ok.json" "$ACC/proof-bad.json"
+  out="$(SANDBOX_ACCEPTANCE_FILE="$ACC/proof-bad.json" "$SANDBOX" exec --agent-root "$root" \
+    --image "$IMAGE" --env-file "$ENV_FILE" -- true 2>&1)" || rc=$?
+  assert_eq 3 "$rc" "Exit bei verfälschtem Nachweis"
+  assert_contains "$out" "sandbox_run_sha256"
+  SANDBOX_ACCEPTANCE_FILE="$ACC/proof-ok.json" "$SANDBOX" exec --agent-root "$root" \
+    --image "$IMAGE" --env-file "$ENV_FILE" -- true >/dev/null 2>&1 || fail "Lauf mit passendem Nachweis scheiterte"
+  rm -f "$ACC/proof-ok.json" "$ACC/proof-bad.json"
+  finish_agent "$root"
+}
+
 cleanup_after_sigterm() {
   local root pid
   root="$(agent term)"
@@ -157,10 +276,37 @@ cleanup_after_sigterm() {
 
 # --- Ablauf ----------------------------------------------------------------
 
+ALL_CASES="guard_refuses_without_proof guard_detects_fingerprint_mismatch network_external_blocked
+  network_loopback_to_pg network_loopback_to_redis env_only_allowlist readonly_src_and_root scratch_visible_in_sequence hardening
+  vm_sees_only_audit_root pids_limit memory_oom fsize_limit disk_limit timeout_kills promote_end_to_end
+  cleanup_after_sigterm"
+PROOF="$HOME/security-audit-skill/.sandbox-acceptance.json"
+
+# Schreibt den Nachweis nur nach einem vollständigen, grünen Lauf.
+# Ein roter Lauf löscht einen bestehenden Nachweis.
+write_proof() {
+  if [ "$FAILED" -ne 0 ]; then
+    rm -f "$PROOF"
+    echo "Nachweis gelöscht: Abnahme rot"
+    return
+  fi
+  [ -z "${ACCEPTANCE_CASES:-}" ] || { echo "Nachweis unverändert: nur Teilauswahl gelaufen"; return; }
+  python3 -I -c '
+import datetime, json, os, sys
+fp = json.loads(sys.argv[1])
+fp.update(result="green", cases=sys.argv[2].split(),
+          date=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"))
+tmp = sys.argv[3] + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(fp, f, indent=2, sort_keys=True)
+os.replace(tmp, sys.argv[3])
+' "$("$SANDBOX" fingerprint)" "$ALL_CASES" "$PROOF"
+  echo "Nachweis geschrieben: $PROOF"
+}
+
 make_repo
-for c in ${ACCEPTANCE_CASES:-guard_refuses_without_proof network_external_blocked network_loopback_to_pg \
-  env_only_allowlist readonly_src_and_root scratch_visible_in_sequence hardening vm_sees_only_audit_root \
-  cleanup_after_sigterm}; do
+for c in ${ACCEPTANCE_CASES:-$ALL_CASES}; do
   run_case "$c"
 done
+write_proof
 finish
