@@ -20,6 +20,8 @@ jobs:
     # gitleaks-action — die Action ist raus, das Recht damit auch.
     permissions:
       contents: read
+      # Für den Tamper-Check im Push-Lauf: zu welchem PR gehört ein Commit?
+      pull-requests: read
     steps:
       # fetch-depth: 0 ist Pflicht — der Tamper-Check vergleicht gegen den
       # Zielbranch und braucht dessen Vorgeschichte.
@@ -113,13 +115,38 @@ jobs:
       # Normalfall nie. Er blockiert den Push nicht, der ist dann schon
       # passiert; er macht ihn sichtbar und färbt main rot.
       # `always()`, damit ein Lauf in einer Runde alles meldet statt in zweien.
+      #
+      # Das Werkzeug kommt aus dem Stand der Basis, nicht aus dem PR. Sonst
+      # tauscht ein PR mit dem Lockfile die quality-Version aus, die ihn selbst
+      # prüft. Die Version steht im Lockfile der Basis. quality hat keine
+      # Laufzeit-Abhängigkeiten, ein Klon genügt. Findet der Schritt keine
+      # Version, bricht er ab: ein Rückfall auf den PR hebelte den Schutz aus.
       - name: Tamper-Check
         if: always() && (github.event_name == 'pull_request' || github.event_name == 'push')
         env:
           # Pull Request: gegen den Zielbranch. Push: gegen den Stand davor.
           # Beim ersten Push ist das der Null-SHA — der Check überspringt dann.
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
-        run: ads-cockpit/backend/vendor/bin/quality tamper --base "$BASE"
+          LOCKFILE: ads-cockpit/backend/composer.lock
+          # Im Push-Lauf bestätigt die GitHub-API einen Bot-Autor: der Commit
+          # gehört zu einem gemergten PR eines Bots. Braucht `pull-requests: read`.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            echo "Tamper-Check übersprungen: kein Stand vor diesem Push."
+            exit 0
+          fi
+          REF=$(git show "$BASE:$LOCKFILE" 2>/dev/null \
+            | grep -oE 'renestandout/quality[^"]*[#/][0-9a-f]{40}' \
+            | grep -oE '[0-9a-f]{40}$' | head -n 1 || true)
+          if [ -z "$REF" ]; then
+            echo "::error::Keine quality-Version in $LOCKFILE der Basis gefunden."
+            exit 1
+          fi
+          git clone --quiet --filter=blob:none https://github.com/renestandout/quality "$RUNNER_TEMP/quality-base"
+          git -C "$RUNNER_TEMP/quality-base" checkout --quiet "$REF"
+          node "$RUNNER_TEMP/quality-base/bin/quality" tamper --base "$BASE"
 
       - name: Abhängigkeiten auf bekannte Lücken prüfen (PHP)
         if: always()

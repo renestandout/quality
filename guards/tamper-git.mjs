@@ -245,24 +245,124 @@ function mergeHasOwnChange(root, sha) {
 }
 
 /**
+ * Ein PR, mit dem GitHub einen Commit verknüpft.
+ *
+ * @typedef {{ author: string, merged: boolean }} PullRequest
+ */
+
+/**
+ * Liefert die PRs zu einem Commit. Wirft, wenn die Antwort fehlt.
+ *
+ * @typedef {(sha: string) => PullRequest[]} PullsOf
+ */
+
+/**
+ * Ein GitHub-Login, der einem Bot gehört.
+ * GitHub vergibt Logins mit `[bot]` nur an Apps. Den Wert setzt GitHub, nicht
+ * der Autor eines Commits.
+ *
+ * @param {string} login
+ * @returns {boolean}
+ */
+function isBotLogin(login) {
+  return login.endsWith('[bot]') || login === 'renovate' || login === 'dependabot'
+}
+
+/**
+ * Fragt die GitHub-API nach den PRs zu einem Commit.
+ * Läuft in einem eigenen Node-Prozess, weil der Tamper-Check synchron ist.
+ * Der Token geht über die Umgebung, nicht über die Kommandozeile.
+ *
+ * @type {PullsOf}
+ */
+function githubPullsOf(sha) {
+  if (!process.env.GITHUB_TOKEN) throw new Error('GITHUB_TOKEN fehlt')
+  if (!process.env.GITHUB_REPOSITORY) throw new Error('GITHUB_REPOSITORY fehlt')
+  const script = `
+    const api = process.env.GITHUB_API_URL || 'https://api.github.com'
+    const res = await fetch(api + '/repos/' + process.env.GITHUB_REPOSITORY + '/commits/' + process.argv[1] + '/pulls', {
+      headers: {
+        authorization: 'Bearer ' + process.env.GITHUB_TOKEN,
+        accept: 'application/vnd.github+json',
+        'x-github-api-version': '2022-11-28',
+      },
+      signal: AbortSignal.timeout(15000),
+    })
+    if (!res.ok) {
+      process.stderr.write('HTTP ' + res.status)
+      process.exit(1)
+    }
+    const pulls = await res.json()
+    process.stdout.write(JSON.stringify(pulls.map((p) => ({ author: p.user?.login ?? '', merged: p.merged_at != null }))))
+  `
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script, sha], {
+    encoding: 'utf8',
+    timeout: 20000,
+  })
+  if (result.error || result.status !== 0) {
+    const reason = result.stderr?.trim() || result.error?.message || `Status ${result.status}`
+    throw new Error(`GitHub-API nicht erreichbar (${reason})`)
+  }
+  return /** @type {PullRequest[]} */ (JSON.parse(result.stdout))
+}
+
+/**
+ * Der Autor des PR, wenn der Lauf zu einem PR gehört.
+ * GitHub schreibt ihn in die Ereignisdatei. Ein Commit kann ihn nicht setzen.
+ *
+ * @returns {string | null}
+ */
+function pullRequestAuthor() {
+  const path = process.env.GITHUB_EVENT_PATH
+  if (!path) return null
+  try {
+    const event = JSON.parse(readFileSync(path, 'utf8'))
+    const login = event?.pull_request?.user?.login
+    return typeof login === 'string' ? login : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * Ermittelt, ob der Diff von einem Bot stammt (Renovate, Dependabot).
  *
- * Beim Merge eines Bot-PRs auf main ist der Merge-Commit vom Menschen, und
- * im Push-Lauf ist auch `GITHUB_ACTOR` der Mensch. Ein Merge-Commit ohne
- * eigene Änderung trägt nur Inhalt seiner Eltern. Er zählt deshalb nicht als
- * Autor. Ein Merge-Commit mit eigener Änderung zählt wie jeder andere Commit.
- * Ein pauschales `--no-merges` liesse diese Änderung ungeprüft durch.
+ * Der Git-Autor allein reicht dafür nicht. Ihn setzt jeder selbst, etwa mit
+ * `git commit --author='dependabot[bot] <…>'`. Er ist deshalb nur die
+ * Vorbedingung. Die Bot-Identität bestätigt GitHub:
+ *
+ * - `GITHUB_ACTOR` ist ein Bot. So läuft der PR-Lauf eines Bot-PR.
+ * - Im PR-Lauf, den ein Mensch auslöst, zählt der PR-Autor aus der
+ *   Ereignisdatei. Das deckt «Update branch» auf einem Bot-PR ab.
+ * - Im Push-Lauf gehört jeder Commit zu einem gemergten PR eines Bots. Das
+ *   sagt die GitHub-API. Nach dem Merge eines Bot-PR ist `GITHUB_ACTOR` der
+ *   Mensch, der gemergt hat.
+ *
+ * Fehlt die Bestätigung, entfällt die Ausnahme, und `unconfirmed` nennt den
+ * Grund. Ein Bot-Diff wird dann rot statt still grün.
+ *
+ * Ein Merge-Commit ohne eigene Änderung trägt nur Inhalt seiner Eltern. Er
+ * zählt deshalb nicht als Autor. Ein Merge-Commit mit eigener Änderung zählt
+ * wie jeder andere Commit. Ein pauschales `--no-merges` liesse diese Änderung
+ * ungeprüft durch.
+ *
+ * Grenze: PR-Autor und API bestätigen den PR, nicht den einzelnen Commit. Ein
+ * Mensch mit Schreibrecht kann einen Commit mit gefälschtem Autor auf den
+ * Branch eines Bot-PR pushen. PR-Lauf und Push-Lauf bleiben dann grün.
  *
  * @param {string} root
  * @param {string | null} base
- * @returns {boolean}
+ * @param {PullsOf} pullsOf
+ * @returns {{ bot: boolean, unconfirmed: string | null }}
  */
-function isBotAuthor(root, base) {
-  const actor = process.env.GITHUB_ACTOR ?? ''
-  if (actor.endsWith('[bot]') || actor === 'renovate' || actor === 'dependabot') return true
-  if (!base) return false
+function isBotAuthor(root, base, pullsOf) {
+  const no = { bot: false, unconfirmed: null }
+  if (isBotLogin(process.env.GITHUB_ACTOR ?? '')) return { bot: true, unconfirmed: null }
+  if (!base) return no
+  /** @type {{ sha: string, author: string }[]} */
+  let commits
   try {
-    const authors = git(['log', `${base}..HEAD`, '--format=%H%x09%P%x09%an <%ae>'], root)
+    commits = git(['log', `${base}..HEAD`, '--format=%H%x09%P%x09%an <%ae>'], root)
       .split('\n')
       .filter(Boolean)
       .map((line) => {
@@ -270,10 +370,26 @@ function isBotAuthor(root, base) {
         return { sha, merge: parents.split(' ').length > 1, author }
       })
       .filter(({ sha, merge }) => !merge || mergeHasOwnChange(root, sha))
-      .map(({ author }) => author)
-    return authors.length > 0 && authors.every((a) => /\[bot\]|renovate|dependabot/i.test(a))
   } catch {
-    return false
+    return no
+  }
+  const claimed =
+    commits.length > 0 && commits.every(({ author }) => /\[bot\]|renovate|dependabot/i.test(author))
+  if (!claimed) return no
+
+  const prAuthor = pullRequestAuthor()
+  if (prAuthor !== null) {
+    if (isBotLogin(prAuthor)) return { bot: true, unconfirmed: null }
+    return { bot: false, unconfirmed: `der PR stammt von ${prAuthor}` }
+  }
+  try {
+    const confirmed = commits.every(({ sha }) =>
+      pullsOf(sha).some((pr) => pr.merged && isBotLogin(pr.author)),
+    )
+    if (confirmed) return { bot: true, unconfirmed: null }
+    return { bot: false, unconfirmed: 'kein gemergter PR eines Bots zu diesen Commits' }
+  } catch (err) {
+    return { bot: false, unconfirmed: /** @type {Error} */ (err).message }
   }
 }
 
@@ -338,10 +454,20 @@ export function isCi(env) {
  * und Tests, und deren Ausgabe hat kein Autor geschrieben. Ohne `base` ist
  * dieser Teil die ganze Prüfung und läuft immer.
  *
- * @param {{ root: string, base?: string | null, worktree?: boolean, ignorePaths?: string[], quiet?: boolean }} options
+ * `pullsOf` fragt im Push-Lauf, zu welchen PRs ein Commit gehört. Ohne Angabe
+ * fragt der Check die GitHub-API. Tests geben eine feste Antwort vor.
+ *
+ * @param {{ root: string, base?: string | null, worktree?: boolean, ignorePaths?: string[], quiet?: boolean, pullsOf?: PullsOf }} options
  * @returns {number}
  */
-export function runTamper({ root, base = null, worktree = true, ignorePaths = [], quiet = false }) {
+export function runTamper({
+  root,
+  base = null,
+  worktree = true,
+  ignorePaths = [],
+  quiet = false,
+  pullsOf = githubPullsOf,
+}) {
   // Beim ersten Push eines Branches gibt es keinen Stand davor. Sauber
   // überspringen, statt an git zu scheitern — und nicht auf den lokalen Modus
   // zurückfallen: der prüfte in CI den uncommitteten Stand und meldete grün,
@@ -357,7 +483,14 @@ export function runTamper({ root, base = null, worktree = true, ignorePaths = []
   if (base) assertRevisionExists(base, root)
   // Ohne ersten Commit gibt es kein HEAD: dann ist der gesamte Stand neu.
   const committed = hasCommit(root)
-  const botAuthor = isBotAuthor(root, base)
+  const { bot: botAuthor, unconfirmed } = isBotAuthor(root, base, pullsOf)
+  if (unconfirmed && !quiet) {
+    process.stdout.write(
+      c.yellow(
+        `Tamper-Check: Bot-Autor nicht bestätigt (${unconfirmed}). Die Bot-Ausnahme entfällt.\n`,
+      ),
+    )
+  }
 
   /** @type {Finding[]} */
   let branchFindings = []

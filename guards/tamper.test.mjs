@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { once } from 'node:events'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { isCi, isNullRef, runTamper } from './tamper-git.mjs'
@@ -24,6 +25,10 @@ import {
 // node --test startet jede Testdatei in einem eigenen Prozess; das Löschen
 // wirkt deshalb nur hier.
 delete process.env.GITHUB_ACTOR
+// Dasselbe gilt für den PR-Autor aus der Ereignisdatei und für den Token, mit
+// dem runTamper im Push-Lauf die GitHub-API fragt.
+delete process.env.GITHUB_EVENT_PATH
+delete process.env.GITHUB_TOKEN
 
 /**
  * Ein echtes Repository mit genau einem Commit — dem Stand nach dem ersten Push.
@@ -1682,12 +1687,40 @@ function asHumanActor(fn) {
   }
 }
 
+/**
+ * Antwort der GitHub-API im Push-Lauf: der Commit gehört zu einem gemergten
+ * PR von Dependabot.
+ */
+const mergedBotPr = () => [{ author: 'dependabot[bot]', merged: true }]
+
+/**
+ * Führt `fn` wie einen PR-Lauf aus, den ein Mensch ausgelöst hat. Den PR hat
+ * `prAuthor` eröffnet. GitHub legt diese Angabe in der Ereignisdatei ab.
+ *
+ * @template T
+ * @param {string} prAuthor
+ * @param {() => T} fn
+ * @returns {T}
+ */
+function asPullRequestRun(prAuthor, fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'quality-event-'))
+  const eventPath = join(dir, 'event.json')
+  writeFileSync(eventPath, JSON.stringify({ pull_request: { user: { login: prAuthor } } }))
+  process.env.GITHUB_EVENT_PATH = eventPath
+  try {
+    return asHumanActor(fn)
+  } finally {
+    delete process.env.GITHUB_EVENT_PATH
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 test('Push-Lauf: ein Merge-Commit ohne eigene Änderung hebt die Bot-Ausnahme nicht auf', () => {
   // Realfall adboard PR #57: PR-Lauf grün, Merge b0cfca3 auf main rot.
   const { root, base } = botMergeFixture()
   try {
     assert.equal(
-      asHumanActor(() => runTamper({ root, base, quiet: true })),
+      asHumanActor(() => runTamper({ root, base, quiet: true, pullsOf: mergedBotPr })),
       0,
     )
   } finally {
@@ -1700,7 +1733,7 @@ test('Push-Lauf: eine eigene Änderung im Merge-Commit schaltet die Bot-Ausnahme
   const { root, base } = botMergeFixture({ mergeEdit: 'fremd@6.6.6' })
   try {
     assert.equal(
-      asHumanActor(() => runTamper({ root, base, quiet: true })),
+      asHumanActor(() => runTamper({ root, base, quiet: true, pullsOf: mergedBotPr })),
       1,
     )
   } finally {
@@ -1714,7 +1747,7 @@ test('Push-Lauf: ein menschlicher Commit neben dem Bot-Commit schaltet die Ausna
     writeFileSync(join(root, 'yarn.lock'), 'paket@1.0.1\nfremd@6.6.6\n')
     execFileSync('git', ['commit', '--quiet', '-am', 'nachgeschoben'], { cwd: root })
     assert.equal(
-      asHumanActor(() => runTamper({ root, base, quiet: true })),
+      asHumanActor(() => runTamper({ root, base, quiet: true, pullsOf: mergedBotPr })),
       1,
     )
   } finally {
@@ -1729,7 +1762,7 @@ test('Push-Lauf: ein Konflikt, gelöst mit der Fassung des Bots, schaltet die Au
   const { root, base } = botMergeFixture({ conflict: true })
   try {
     assert.equal(
-      asHumanActor(() => runTamper({ root, base, quiet: true })),
+      asHumanActor(() => runTamper({ root, base, quiet: true, pullsOf: mergedBotPr })),
       1,
     )
   } finally {
@@ -1750,7 +1783,7 @@ test(
     try {
       chmodSync(objects, 0o555)
       assert.equal(
-        asHumanActor(() => runTamper({ root, base, quiet: true })),
+        asHumanActor(() => runTamper({ root, base, quiet: true, pullsOf: mergedBotPr })),
         1,
       )
     } finally {
@@ -1775,9 +1808,144 @@ test('PR-Lauf: «Update branch» eines Menschen hebt die Bot-Ausnahme nicht auf'
     git('checkout', '--quiet', 'dependabot/paket')
     git('merge', '--quiet', '--no-ff', '--no-edit', 'main')
     assert.equal(
-      asHumanActor(() => runTamper({ root, base: 'main', quiet: true })),
+      asPullRequestRun('dependabot[bot]', () => runTamper({ root, base: 'main', quiet: true })),
       0,
     )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+/**
+ * Ein Repository mit Lockfile und CI-Workflow auf main. Darauf folgt ein
+ * Commit, der beide ändert und als Autor Dependabot angibt. Den Autor hat ein
+ * Mensch gesetzt: `git commit --author` prüft nichts. Zurück kommt der Stand
+ * vor dem Commit als `base`.
+ */
+function forgedBotFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'quality-forged-'))
+  const git = (/** @type {string[]} */ ...args) =>
+    execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  git('init', '--quiet', '--initial-branch=main')
+  git('config', 'user.email', 'dev@example.com')
+  git('config', 'user.name', 'Dev')
+  mkdirSync(join(root, '.github', 'workflows'), { recursive: true })
+  writeFileSync(join(root, 'composer.lock'), '{"packages": []}\n')
+  writeFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'name: CI\n')
+  git('add', '.')
+  git('commit', '--quiet', '-m', 'Stand vor dem PR')
+  const base = git('rev-parse', 'HEAD').trim()
+  writeFileSync(join(root, 'composer.lock'), '{"packages": [{"name": "fremd/paket"}]}\n')
+  writeFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'name: CI\n# Prüfung entfernt\n')
+  git('add', '.')
+  git('commit', '--quiet', '--author=dependabot[bot] <x@example.invalid>', '-m', 'Bump')
+  return { root, base }
+}
+
+test('ein gefälschter Bot-Autor hebt die Bot-Ausnahme nicht auf', () => {
+  // Befund Security-Audit 2026-10-26: der Git-Autor allein ist keine Identität.
+  const { root, base } = forgedBotFixture()
+  const before = process.env.GITHUB_ACTOR
+  process.env.GITHUB_ACTOR = 'human-dev'
+  try {
+    const { code, output } = withOutput(() => runTamper({ root, base }))
+    assert.equal(code, 1)
+    assert.match(output, /composer\.lock[\s\S]*geänderte Abhängigkeiten/)
+    assert.match(output, /\.github\/workflows\/ci\.yml[\s\S]*CI-Workflow geändert/)
+  } finally {
+    if (before === undefined) delete process.env.GITHUB_ACTOR
+    else process.env.GITHUB_ACTOR = before
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('PR-Lauf: ein gefälschter Bot-Autor im PR eines Menschen bleibt ein Fund', () => {
+  const { root, base } = forgedBotFixture()
+  try {
+    assert.equal(
+      asPullRequestRun('human-dev', () => runTamper({ root, base, quiet: true })),
+      1,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Push-Lauf: ein gefälschter Bot-Autor im gemergten PR eines Menschen bleibt ein Fund', () => {
+  const { root, base } = forgedBotFixture()
+  const pullsOf = () => [{ author: 'human-dev', merged: true }]
+  try {
+    assert.equal(
+      asHumanActor(() => runTamper({ root, base, quiet: true, pullsOf })),
+      1,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Push-Lauf: ein offener Bot-PR bestätigt einen direkt gepushten Commit nicht', () => {
+  // Der Mensch legt den Commit auf den Bot-Branch und pusht ihn zugleich
+  // direkt auf main. Der PR ist dann offen, nicht gemergt.
+  const { root, base } = forgedBotFixture()
+  const pullsOf = () => [{ author: 'dependabot[bot]', merged: false }]
+  try {
+    assert.equal(
+      asHumanActor(() => runTamper({ root, base, quiet: true, pullsOf })),
+      1,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Push-Lauf: die GitHub-API bestätigt den gemergten Bot-PR', async () => {
+  // Der Server läuft in einem eigenen Prozess: runTamper wartet synchron auf
+  // die Antwort und blockiert dabei diesen Prozess.
+  const server = spawn(
+    process.execPath,
+    [
+      '-e',
+      `require('node:http').createServer((req, res) => {
+        const ok = req.url.startsWith('/repos/standout/app/commits/') && req.url.endsWith('/pulls')
+          && req.headers.authorization === 'Bearer geheim'
+        res.writeHead(ok ? 200 : 404, { 'content-type': 'application/json' })
+        res.end(ok ? JSON.stringify([{ user: { login: 'dependabot[bot]' }, merged_at: '2026-10-21T07:45:12Z' }]) : '{}')
+      }).listen(0, '127.0.0.1', function () { console.log(this.address().port) })`,
+    ],
+    { stdio: ['ignore', 'pipe', 'inherit'] },
+  )
+  const [port] = /** @type {[Buffer]} */ (
+    await once(/** @type {import('node:stream').Readable} */ (server.stdout), 'data')
+  )
+  const { root, base } = botMergeFixture()
+  const env = {
+    GITHUB_TOKEN: 'geheim',
+    GITHUB_REPOSITORY: 'standout/app',
+    GITHUB_API_URL: `http://127.0.0.1:${String(port).trim()}`,
+  }
+  Object.assign(process.env, env)
+  try {
+    assert.equal(
+      asHumanActor(() => runTamper({ root, base, quiet: true })),
+      0,
+    )
+  } finally {
+    for (const key of Object.keys(env)) delete process.env[key]
+    server.kill()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Push-Lauf: ohne Antwort der API bleibt die Bot-Ausnahme aus und der Check sagt warum', () => {
+  // Ohne GITHUB_TOKEN fragt der Check die API nicht. Der Bot-Diff wird rot,
+  // und die Ausgabe nennt die fehlende Bestätigung.
+  const { root, base } = botMergeFixture()
+  try {
+    const { code, output } = withOutput(() => asHumanActor(() => runTamper({ root, base })))
+    assert.equal(code, 1)
+    assert.match(output, /Bot-Autor nicht bestätigt/)
+    assert.match(output, /GITHUB_TOKEN/)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -1878,7 +2046,9 @@ test('--base: die Bot-Ausnahme gilt nicht für uncommittete Änderungen', () => 
       'Bump paket',
     )
     writeFileSync(join(root, 'yarn.lock'), 'paket@1.0.1\nfremd@6.6.6\n')
-    const { code, output } = withOutput(() => runTamper({ root, base: 'main' }))
+    const { code, output } = withOutput(() =>
+      runTamper({ root, base: 'main', pullsOf: mergedBotPr }),
+    )
     assert.equal(code, 0)
     assert.match(output, /Hinweis.*yarn\.lock/)
   } finally {

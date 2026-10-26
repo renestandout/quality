@@ -420,6 +420,45 @@ keinen Stand davor (`github.event.before` ist dann der Null-SHA); der Check
 der Stand davor nicht mehr — dann bricht der Check mit einer Meldung ab und der
 Lauf wird rot. Das ist Absicht: ein Force-Push auf `main` soll auffallen.
 
+### Bot-Ausnahme: nur bestätigte Identitäten
+
+Ein Bot-Diff (Renovate, Dependabot) darf Lockfiles und CI-Workflows ändern.
+Sonst wäre jeder Versions-PR rot. Der Git-Autor allein reicht dafür nicht: ihn
+setzt jeder selbst, etwa mit `git commit --author='dependabot[bot] <…>'`. Der
+Git-Autor ist deshalb nur die Vorbedingung. Alle Commits im Bereich müssen
+einen Bot nennen, und GitHub muss die Bot-Identität bestätigen:
+
+- **PR-Lauf eines Bots:** `GITHUB_ACTOR` ist der Bot.
+- **PR-Lauf, den ein Mensch auslöst** (etwa «Update branch»): Der PR-Autor aus
+  der Ereignisdatei (`GITHUB_EVENT_PATH`) ist ein Bot.
+- **Push-Lauf nach dem Merge:** Jeder Commit gehört zu einem gemergten PR eines
+  Bots. Das fragt der Check über die GitHub-API ab. Der Schritt braucht dafür
+  `GITHUB_TOKEN` und das Recht `pull-requests: read`.
+
+Fehlt die Bestätigung, entfällt die Ausnahme. Der Check nennt dann den Grund,
+zum Beispiel «GITHUB_TOKEN fehlt». Ein Bot-Diff wird rot statt still grün.
+
+Eine Lücke bleibt: PR-Autor und API bestätigen den PR, nicht den einzelnen
+Commit. Ein Mensch mit Schreibrecht kann einen Commit mit gefälschtem Autor auf
+den Branch eines Bot-PR pushen. PR-Lauf und Push-Lauf bleiben dann grün. Ein
+Angriff braucht also einen offenen Bot-PR. Den eigenen PR eines Menschen
+bestätigt der Check nicht mehr.
+
+### Das Werkzeug kommt aus der Basis
+
+Ein PR kann mit seinem Lockfile die quality-Version austauschen, die ihn
+selbst prüft. Die Vorlagen in `examples/` laden das Werkzeug deshalb aus dem
+Stand der Basis: Sie lesen die Version aus dem Lockfile der Basis und klonen
+quality in genau dieser Version. quality hat keine Laufzeit-Abhängigkeiten,
+der Klon genügt. Findet der Schritt keine Version im Lockfile der Basis, bricht
+er ab. Ein Rückfall auf die Version aus dem PR hebelte den Schutz aus.
+
+Auch hier bleibt eine Grenze. Bei `pull_request` stammt der Workflow selbst aus
+dem PR. Ein PR kann den Tamper-Schritt also umschreiben. Der Check meldet die
+Änderung am Workflow als `protected.changed`, solange er noch läuft. Vollständig
+schützt erst die Branch-Regel: Tamper-Check als Required Check und ein
+Code-Owner-Review für `.github/workflows/`.
+
 Jeder Treffer lässt sich mit einem Commit-Trailer durchwinken:
 
 ```
