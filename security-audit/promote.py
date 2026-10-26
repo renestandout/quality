@@ -257,6 +257,10 @@ def promote_all(
         except PromoteError as e:
             results.append(Result(entry.path, "rejected", str(e), 0))
             continue
+        except OSError as e:
+            # Schritt 11: auch ein Ein-/Ausgabefehler verwirft nur diesen Eintrag.
+            results.append(Result(entry.path, "rejected", f"io-error: {entry.path}: {e.strerror or e}", 0))
+            continue
         remaining -= n
         results.append(Result(entry.path, "promoted", None, n))
     return results
@@ -286,6 +290,40 @@ def containers_left(label: str) -> bool:
     return proc.returncode != 0 or bool(proc.stdout.strip())
 
 
+def run_forwarding_signals(command: list) -> tuple:
+    """Startet den Befehl und gibt SIGINT und SIGTERM an ihn weiter.
+
+    Wartet ohne Frist auf sein Ende, damit seine Traps die Container entfernen
+    können. Gibt (Exit-Code, Name des ersten Signals oder None) zurück.
+    """
+    import signal
+    import subprocess
+    import sys
+
+    try:
+        child = subprocess.Popen(command, close_fds=True)
+    except OSError as e:
+        print(f"promote.py: Befehl nicht startbar: {e}", file=sys.stderr)
+        return 127, None
+    received = []
+
+    def forward(signum, frame):
+        if not received:
+            received.append(signal.Signals(signum).name)
+        try:
+            child.send_signal(signum)
+        except ProcessLookupError:
+            pass
+
+    old = {s: signal.signal(s, forward) for s in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        returncode = child.wait()
+    finally:
+        for s, handler in old.items():
+            signal.signal(s, handler)
+    return returncode, (received[0] if received else None)
+
+
 def main(argv: Optional[list] = None) -> int:
     import argparse
     import subprocess
@@ -297,7 +335,9 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--scratch", required=True)
     parser.add_argument("--artifacts", required=True)
     parser.add_argument("--manifest", required=True)
-    parser.add_argument("--container-label", help="Label der Sandbox-Container; nach dem Lauf darf keiner übrig sein.")
+    check = parser.add_mutually_exclusive_group(required=True)
+    check.add_argument("--container-label", help="Label der Sandbox-Container; nach dem Lauf darf keiner übrig sein.")
+    check.add_argument("--no-container-check", action="store_true", help="Nur für Tests ohne Docker.")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -319,11 +359,7 @@ def main(argv: Optional[list] = None) -> int:
         return 2
 
     try:
-        try:
-            command_exit = subprocess.run(command, close_fds=True).returncode
-        except OSError as e:
-            print(f"promote.py: Befehl nicht startbar: {e}", file=sys.stderr)
-            command_exit = 127
+        command_exit, interrupted = run_forwarding_signals(command)
         left = bool(args.container_label) and containers_left(args.container_label)
         if left:
             results = [Result(e.path, "rejected", "containers-left: Sandbox lief noch", 0) for e in manifest.files]
@@ -335,6 +371,7 @@ def main(argv: Optional[list] = None) -> int:
 
     report = {
         "command_exit": command_exit,
+        "interrupted": interrupted,
         "containers_left": left,
         "promoted": [{"path": r.path, "bytes": r.bytes} for r in results if r.status == "promoted"],
         "rejected": [{"path": r.path, "reason": r.reason} for r in results if r.status == "rejected"],

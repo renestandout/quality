@@ -8,9 +8,12 @@
 #                       [--rw PATH]... [--workdir DIR] [--unverified-for-acceptance] -- BEFEHL...
 #   sandbox-run.sh cleanup --agent-root DIR
 #   sandbox-run.sh fingerprint
+#   sandbox-run.sh label --agent-root DIR     (Wert für promote.py --container-label)
 #
 # Nur der Parent eines Audit-Laufs ruft dieses Skript auf. Details: README.md.
-# Exit-Codes: 2 Aufruffehler, 3 Vorbedingung verweigert.
+# Eigene Exit-Codes: 90 Aufruffehler, 91 Vorbedingung verweigert. Sonst gibt
+# exec den Exit-Code des Befehls zurück. Die Werte sind hoch gewählt, damit sie
+# nicht mit üblichen Codes des Zielcodes (1, 2, 3 …) verwechselt werden.
 
 set -euo pipefail
 
@@ -33,10 +36,13 @@ realpath_py() {
 is_denied() { # relativer-pfad
   local IFS=/ part base
   for part in $1; do
-    case "$part" in .git | node_modules | .ddev) return 0 ;; esac
+    case "$part" in .git | node_modules | .ddev | .ssh | .aws) return 0 ;; esac
   done
   base="${1##*/}"
-  case "$base" in .env | .env.* | .envrc | auth.json | *.key | *.pem) return 0 ;; esac
+  case "$base" in
+    .env | .env.* | .env-* | *.env | .envrc | auth.json | .npmrc | .netrc | .pgpass) return 0 ;;
+    *.key | *.pem | *.p12 | *.pfx | id_rsa* | id_ecdsa* | id_ed25519* | id_dsa*) return 0 ;;
+  esac
   return 1
 }
 
@@ -50,19 +56,31 @@ valid_agent_id() {
 # Prüft den Agent-Root und gibt seinen kanonischen Pfad aus.
 check_agent_root() { # pfad
   local root audit
-  [[ "$1" = /* ]] || die 3 "--agent-root muss absolut sein: $1"
+  [[ "$1" = /* ]] || die 91 "--agent-root muss absolut sein: $1"
   root="$(realpath_py "$1")"
   audit="$(realpath_py "$AUDIT_ROOT")"
-  [[ "$root" = "$audit"/?* ]] || die 3 "--agent-root muss unter $AUDIT_ROOT liegen: $1"
-  valid_agent_id "$(basename "$root")" || die 3 "ungültige Agent-ID: $(basename "$root")"
+  [[ "$root" = "$audit"/?* ]] || die 91 "--agent-root muss unter $AUDIT_ROOT liegen: $1"
+  valid_agent_id "$(basename "$root")" || die 91 "ungültige Agent-ID: $(basename "$root")"
   printf '%s\n' "$root"
 }
 
 check_rel_path() { # pfad
   case "/$1/" in
-    *"/../"* | *"/./"* | *"//"*) die 2 "Pfad muss relativ sein, ohne . und ..: $1" ;;
+    *"/../"* | *"/./"* | *"//"*) die 90 "Pfad muss relativ sein, ohne . und ..: $1" ;;
   esac
-  [[ "$1" != /* && -n "$1" ]] || die 2 "Pfad muss relativ sein: $1"
+  [[ "$1" != /* && -n "$1" ]] || die 90 "Pfad muss relativ sein: $1"
+}
+
+# Bricht ab, wenn ein Teil von base/rel ein Symlink oder kein Ordner ist.
+# Zielcode kann unter scratch/ Symlinks anlegen. Docker würde ihnen beim
+# Bind-Mount folgen.
+check_no_symlink() { # base rel
+  local path="$1" part IFS=/
+  for part in $2; do
+    path="$path/$part"
+    [ ! -L "$path" ] || die 91 "Symlink in scratch/, Lauf verweigert: $path"
+    [ -d "$path" ] || die 91 "kein Ordner: $path"
+  done
 }
 
 agent_label() { # agent-root
@@ -102,18 +120,18 @@ cmd_prepare() {
       --scratch-size) size="${2:-}"; shift 2 ;;
       --rw) check_rel_path "${2:-}"; rw+=("$2"); shift 2 ;;
       --include) check_rel_path "${2:-}"; includes+=("$2"); shift 2 ;;
-      *) die 2 "prepare: unbekannte Option $1" ;;
+      *) die 90 "prepare: unbekannte Option $1" ;;
     esac
   done
-  [ -n "$agent_root" ] && [ -n "$target" ] || die 2 "prepare braucht --agent-root und --target"
-  [[ "$size" =~ ^[0-9]+[mg]$ ]] || die 2 "--scratch-size wie 512m oder 1g angeben: $size"
+  [ -n "$agent_root" ] && [ -n "$target" ] || die 90 "prepare braucht --agent-root und --target"
+  [[ "$size" =~ ^[0-9]+[mg]$ ]] || die 90 "--scratch-size wie 512m oder 1g angeben: $size"
 
   root="$(check_agent_root "$agent_root")"
-  git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die 3 "--target ist kein Git-Repo: $target"
+  git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die 91 "--target ist kein Git-Repo: $target"
   target="$(realpath_py "$(git -C "$target" rev-parse --show-toplevel)")"
-  [[ "$root/" != "$target"/* ]] || die 3 "--agent-root darf nicht im Ziel-Repo liegen"
+  [[ "$root/" != "$target"/* ]] || die 91 "--agent-root darf nicht im Ziel-Repo liegen"
   if [ -e "$root" ] && [ -n "$(ls -A "$root")" ]; then
-    die 3 "Agent-Root existiert schon und ist nicht leer: $root"
+    die 91 "Agent-Root existiert schon und ist nicht leer: $root"
   fi
 
   src="$root/src"
@@ -130,7 +148,7 @@ cmd_prepare() {
   done
   if [ "${#rw[@]}" -gt 0 ]; then
     for p in "${rw[@]}"; do
-      [ -d "$target/$p" ] || die 3 "--rw $p ist im Ziel-Repo kein Ordner"
+      [ -d "$target/$p" ] || die 91 "--rw $p ist im Ziel-Repo kein Ordner"
       (cd "$target" && find "$p" -type d -print0) | while IFS= read -r -d '' d; do
         mkdir -p -m 0777 "$scratch/rw/$d"
       done
@@ -139,11 +157,14 @@ cmd_prepare() {
 
   # Quellkopie: ohne ignorierte Dateien und ohne Denylist-Treffer.
   source_files "$target" ${includes[@]+"${includes[@]}"} | (cd "$target" && tar --null -T - -cf -) | (cd "$src" && tar -xf -)
-  hit="$(cd "$src" && find . \( -name .git -o -name node_modules -o -name .ddev -o -name .env -o -name '.env.*' -o -name .envrc \
-    -o -name auth.json -o -name '*.key' -o -name '*.pem' \) -print | head -5)"
+  hit="$(cd "$src" && find . \( -name .git -o -name node_modules -o -name .ddev -o -name .ssh -o -name .aws \
+    -o -name .env -o -name '.env.*' -o -name '.env-*' -o -name '*.env' -o -name .envrc -o -name auth.json \
+    -o -name .npmrc -o -name .netrc -o -name .pgpass -o -name '*.key' -o -name '*.pem' -o -name '*.p12' \
+    -o -name '*.pfx' -o -name 'id_rsa*' -o -name 'id_ecdsa*' -o -name 'id_ed25519*' -o -name 'id_dsa*' \) \
+    -print | head -5 || true)"
   if [ -n "$hit" ]; then
     cmd_cleanup --agent-root "$root" >/dev/null 2>&1 || true
-    die 3 "Denylist-Treffer in der Quellkopie: $hit"
+    die 91 "Denylist-Treffer in der Quellkopie: $hit"
   fi
   chmod -R a+rX "$src"
 
@@ -157,7 +178,7 @@ print(json.dumps({"commit": sys.argv[1], "dirty": sys.argv[2] != "", "target": s
 
 to_bytes() { # 64m | 1g | 512k | 1024
   local n="${1%[kKmMgG]}" unit="${1##*[0-9]}"
-  [[ "$n" =~ ^[0-9]+$ ]] || die 2 "Grösse wie 64m oder 1g angeben: $1"
+  [[ "$n" =~ ^[0-9]+$ ]] || die 90 "Grösse wie 64m oder 1g angeben: $1"
   case "$unit" in
     "") echo "$n" ;;
     k | K) echo $((n * 1024)) ;;
@@ -171,7 +192,7 @@ cmd_fingerprint() {
   local colima docker_version images mounts sha
   colima="$(colima version 2>/dev/null | awk 'NR==1 {print $3}')"
   docker_version="$(docker --context "$DOCKER_CONTEXT" version --format '{{.Server.Version}}' 2>/dev/null)" ||
-    die 3 "Docker-Kontext $DOCKER_CONTEXT nicht erreichbar. Läuft «colima start -p audit»?"
+    die 91 "Docker-Kontext $DOCKER_CONTEXT nicht erreichbar. Läuft «colima start -p audit»?"
   images="$(docker --context "$DOCKER_CONTEXT" images --no-trunc --format '{{.Repository}}:{{.Tag}} {{.ID}}' | sort)"
   mounts="$(colima ssh -p audit -- findmnt -t virtiofs -n -o TARGET 2>/dev/null | sort)"
   sha="$(shasum -a 256 "$SELF" | cut -d' ' -f1)"
@@ -204,6 +225,12 @@ if diff:
 ' "$ACCEPTANCE_FILE" "$1"
 }
 
+WATCHDOG=""
+
+stop_watchdog() {
+  [ -z "$WATCHDOG" ] || kill "$WATCHDOG" 2>/dev/null || true
+}
+
 remove_containers() { # label
   local ids
   ids="$(docker --context "$DOCKER_CONTEXT" ps -aq --filter "label=security-audit.agent=$1" 2>/dev/null)" || return 0
@@ -229,61 +256,61 @@ cmd_exec() {
       --workdir) workdir="${2:-}"; shift 2 ;;
       --unverified-for-acceptance) unverified=1; shift ;;
       --) shift; break ;;
-      *) die 2 "exec: unbekannte Option $1" ;;
+      *) die 90 "exec: unbekannte Option $1" ;;
     esac
   done
-  [ $# -gt 0 ] || die 2 "exec: Befehl nach -- fehlt"
-  [ -n "$agent_root" ] && [ -n "$image" ] && [ -n "$env_file" ] || die 2 "exec braucht --agent-root, --image und --env-file"
-  [ -z "$redis" ] || [ -n "$pg" ] || die 2 "--redis braucht --pg, Redis teilt dessen Netz-Namespace"
-  [[ "$timeout" =~ ^[0-9]+$ && "$pids" =~ ^[0-9]+$ ]] || die 2 "--timeout und --pids als ganze Zahl angeben"
-  [[ "$cpus" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die 2 "--cpus als Zahl angeben: $cpus"
+  [ $# -gt 0 ] || die 90 "exec: Befehl nach -- fehlt"
+  [ -n "$agent_root" ] && [ -n "$image" ] && [ -n "$env_file" ] || die 90 "exec braucht --agent-root, --image und --env-file"
+  [ -z "$redis" ] || [ -n "$pg" ] || die 90 "--redis braucht --pg, Redis teilt dessen Netz-Namespace"
+  [[ "$timeout" =~ ^[0-9]+$ && "$pids" =~ ^[0-9]+$ ]] || die 90 "--timeout und --pids als ganze Zahl angeben"
+  [[ "$cpus" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die 90 "--cpus als Zahl angeben: $cpus"
   memory="$(to_bytes "$memory")"
   fsize="$(to_bytes "$fsize")"
 
   root="$(check_agent_root "$agent_root")"
-  [[ "$root" != *,* ]] || die 3 "Agent-Root darf kein Komma enthalten (docker --mount)"
-  is_mounted "$root/scratch" || die 3 "scratch/ ist nicht eingehängt. Zuerst «prepare» aufrufen."
-  [ -d "$root/src" ] || die 3 "src/ fehlt. Zuerst «prepare» aufrufen."
+  [[ "$root" != *,* ]] || die 91 "Agent-Root darf kein Komma enthalten (docker --mount)"
+  is_mounted "$root/scratch" || die 91 "scratch/ ist nicht eingehängt. Zuerst «prepare» aufrufen."
+  [ -d "$root/src" ] || die 91 "src/ fehlt. Zuerst «prepare» aufrufen."
 
   fp="$(cmd_fingerprint)"
   python3 -I -c '
 import json, sys
 mounts = json.loads(sys.argv[1])["vm_mounts"]
 raise SystemExit(0 if mounts == [sys.argv[2]] else 1)
-' "$fp" "$AUDIT_ROOT" || die 3 "Die Audit-VM hängt mehr oder anderes ein als $AUDIT_ROOT. Siehe README.md."
+' "$fp" "$AUDIT_ROOT" || die 91 "Die Audit-VM hängt mehr oder anderes ein als $AUDIT_ROOT. Siehe README.md."
   if [ "$unverified" = 1 ]; then
     echo "sandbox-run.sh: Warnung: Lauf ohne Abnahme-Nachweis (nur für acceptance.sh)" >&2
   else
     mismatch="$(proof_mismatch "$fp")"
-    [ -z "$mismatch" ] || die 3 "$mismatch. Zuerst tests/acceptance.sh laufen lassen."
+    [ -z "$mismatch" ] || die 91 "$mismatch. Zuerst tests/acceptance.sh laufen lassen."
   fi
 
   # Jedes Scratch-Image hat als Wurzel dieselbe Inode, und macOS vergibt
   # Disk-Nummern neu. Die VM hält sonst einen veralteten Eintrag für ein
   # früheres Image. Deshalb die Caches der Audit-VM leeren und prüfen.
   colima ssh -p audit -- sudo sh -c 'sync; echo 2 > /proc/sys/vm/drop_caches' ||
-    die 3 "Caches der Audit-VM liessen sich nicht leeren"
+    die 91 "Caches der Audit-VM liessen sich nicht leeren"
   colima ssh -p audit -- test -d "$root/scratch/out" -a -d "$root/src" ||
-    die 3 "Die Audit-VM sieht scratch/ oder src/ nicht: $root"
+    die 91 "Die Audit-VM sieht scratch/ oder src/ nicht: $root"
 
   # Leere Umgebung: nur die Schlüssel aus dem env-file, über env -i im Container.
-  [ -f "$env_file" ] || die 2 "env-file fehlt: $env_file"
+  [ -f "$env_file" ] || die 90 "env-file fehlt: $env_file"
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in "" | "#"*) continue ;; esac
     key="${line%%=*}"
-    [[ "$line" = *=* && "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || die 2 "env-file: ungültige Zeile: $line"
+    [[ "$line" = *=* && "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || die 90 "env-file: ungültige Zeile: $line"
     envs+=("$line")
     keys="$keys$key "
   done <"$env_file"
   for key in PATH HOME TMPDIR; do
-    [[ "$keys" = *" $key "* ]] || die 2 "env-file: $key fehlt"
+    [[ "$keys" = *" $key "* ]] || die 90 "env-file: $key fehlt"
   done
 
   label="$(agent_label "$root")"
   # shellcheck disable=SC2064 # Label jetzt festhalten.
-  trap "remove_containers '$label'" EXIT
-  trap "remove_containers '$label'; exit 143" TERM
-  trap "remove_containers '$label'; exit 130" INT
+  trap "stop_watchdog; remove_containers '$label'" EXIT
+  trap "stop_watchdog; remove_containers '$label'; exit 143" TERM
+  trap "stop_watchdog; remove_containers '$label'; exit 130" INT
   remove_containers "$label"
 
   local harden=(--label "security-audit.agent=$label" --pull never --read-only --cap-drop ALL
@@ -299,7 +326,7 @@ raise SystemExit(0 if mounts == [sys.argv[2]] else 1)
     local i=0
     until docker --context "$DOCKER_CONTEXT" exec "sa-$label-pg" pg_isready -q -h 127.0.0.1 -U db -d db_test 2>/dev/null; do
       i=$((i + 1))
-      [ "$i" -le 30 ] || die 3 "Postgres wurde in 30 s nicht bereit"
+      [ "$i" -le 30 ] || die 91 "Postgres wurde in 30 s nicht bereit"
       sleep 1
     done
     net="container:sa-$label-pg"
@@ -314,15 +341,15 @@ raise SystemExit(0 if mounts == [sys.argv[2]] else 1)
   local mounts=(--mount "type=bind,src=$root/src,dst=/src,readonly" --mount "type=bind,src=$root/scratch,dst=/scratch")
   if [ "${#rw[@]}" -gt 0 ]; then
     for p in "${rw[@]}"; do
-      [ -d "$root/scratch/rw/$p" ] || die 3 "--rw $p wurde bei prepare nicht angelegt"
-      [ -d "$root/src/$p" ] || die 3 "--rw $p: Mountpunkt fehlt in src/"
+      check_no_symlink "$root/scratch" "rw/$p"
+      [ -d "$root/src/$p" ] || die 91 "--rw $p: Mountpunkt fehlt in src/"
       mounts+=(--mount "type=bind,src=$root/scratch/rw/$p,dst=/src/$p")
     done
   fi
 
   # Wall-Clock: timeout im Container, dazu ein Wächter auf dem Host.
   # docker run läuft im Hintergrund, damit die Traps sofort greifen.
-  local rc=0 child watchdog
+  local rc=0 child
   docker --context "$DOCKER_CONTEXT" run --name "sa-$label-test" "${harden[@]}" --init \
     --network "$net" --user 65534:65534 --workdir "$workdir" \
     --cpus "$cpus" --memory "$memory" --memory-swap "$memory" --pids-limit "$pids" \
@@ -330,14 +357,23 @@ raise SystemExit(0 if mounts == [sys.argv[2]] else 1)
     --env-file "$env_file" "${mounts[@]}" --entrypoint /usr/bin/env \
     "$image" -i "${envs[@]}" timeout --kill-after=5 "$timeout" "$@" </dev/null &
   child=$!
+  # Der Wächter beendet bei TERM auch sein sleep. Sonst bliebe es verwaist.
   (
-    sleep $((timeout + 15))
+    trap 'kill "$s" 2>/dev/null; exit 0' TERM
+    sleep $((timeout + 15)) &
+    s=$!
+    wait "$s"
     docker --context "$DOCKER_CONTEXT" kill "sa-$label-test" >/dev/null 2>&1
   ) </dev/null >/dev/null 2>&1 &
-  watchdog=$!
+  WATCHDOG=$!
   wait "$child" || rc=$?
-  kill "$watchdog" 2>/dev/null || true
+  stop_watchdog
   return "$rc"
+}
+
+cmd_label() {
+  [ "${1:-}" = "--agent-root" ] && [ -n "${2:-}" ] || die 90 "label braucht --agent-root"
+  echo "security-audit.agent=$(agent_label "$(check_agent_root "$2")")"
 }
 
 cmd_cleanup() {
@@ -345,10 +381,10 @@ cmd_cleanup() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent-root) agent_root="${2:-}"; shift 2 ;;
-      *) die 2 "cleanup: unbekannte Option $1" ;;
+      *) die 90 "cleanup: unbekannte Option $1" ;;
     esac
   done
-  [ -n "$agent_root" ] || die 2 "cleanup braucht --agent-root"
+  [ -n "$agent_root" ] || die 90 "cleanup braucht --agent-root"
   root="$(check_agent_root "$agent_root")"
 
   if ids="$(docker --context "$DOCKER_CONTEXT" ps -aq --filter "label=security-audit.agent=$(agent_label "$root")" 2>/dev/null)"; then
@@ -359,13 +395,13 @@ cmd_cleanup() {
   if is_mounted "$root/scratch"; then
     diskutil eject "$root/scratch" >/dev/null 2>&1 || hdiutil detach -quiet -force "$root/scratch"
   fi
-  is_mounted "$root/scratch" && die 3 "scratch/ liess sich nicht aushängen: $root/scratch"
+  is_mounted "$root/scratch" && die 91 "scratch/ liess sich nicht aushängen: $root/scratch"
   rm -rf "$root/src" "$root/scratch.dmg"
   [ ! -d "$root/scratch" ] || rmdir "$root/scratch"
   echo "cleanup: $root"
 }
 
-[ $# -gt 0 ] || die 2 "Unterbefehl fehlt: prepare | exec | cleanup | fingerprint"
+[ $# -gt 0 ] || die 90 "Unterbefehl fehlt: prepare | exec | cleanup | fingerprint | label"
 sub="$1"
 shift
 case "$sub" in
@@ -373,5 +409,6 @@ case "$sub" in
   exec) cmd_exec "$@" ;;
   cleanup) cmd_cleanup "$@" ;;
   fingerprint) cmd_fingerprint ;;
-  *) die 2 "unbekannter Unterbefehl: $sub" ;;
+  label) cmd_label "$@" ;;
+  *) die 90 "unbekannter Unterbefehl: $sub" ;;
 esac

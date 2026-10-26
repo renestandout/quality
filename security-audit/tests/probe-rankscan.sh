@@ -23,9 +23,9 @@ cat >"$ROOT/manifest.json" <<'JSON'
 {"max_total_bytes": 1048576, "files": [{"path": "out/junit.xml", "max_bytes": 1048576}]}
 JSON
 
-label="$(printf '%s' "$ROOT" | shasum -a 256 | cut -c1-12)"
+label="$("$SA/sandbox-run.sh" label --agent-root "$ROOT")"
 report="$(python3 -I "$SA/promote.py" --scratch "$ROOT/scratch" --artifacts "$ROOT/artifacts" \
-  --manifest "$ROOT/manifest.json" --container-label "security-audit.agent=$label" -- \
+  --manifest "$ROOT/manifest.json" --container-label "$label" -- \
   "$SA/sandbox-run.sh" exec --agent-root "$ROOT" \
   --image ddev/ddev-webserver:v1.25.4-rankscan-built --pg postgres:17-rankscan-built \
   --env-file "$SA/env/rankscan.env" --rw storage --rw bootstrap/cache -- \

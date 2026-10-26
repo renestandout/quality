@@ -22,7 +22,8 @@ make_repo() {
     cd "$REPO"
     git init -q
     printf 'quelle\n' > datei.txt
-    git add datei.txt
+    mkdir data && printf 'x\n' > data/.keep
+    git add datei.txt data/.keep
     git -c user.name=t -c user.email=t@example.invalid commit -q -m init
   )
 }
@@ -46,9 +47,7 @@ sx() { # agent-root [exec-optionen] -- befehl...
 }
 
 containers_with_label() { # agent-root
-  local label
-  label="$(printf '%s' "$1" | shasum -a 256 | cut -c1-12)"
-  "${DOCKER[@]}" ps -aq --filter "label=security-audit.agent=$label"
+  "${DOCKER[@]}" ps -aq --filter "label=$("$SANDBOX" label --agent-root "$1")"
 }
 
 finish_agent() { # agent-root
@@ -63,7 +62,7 @@ guard_refuses_without_proof() {
   out="$(SANDBOX_ACCEPTANCE_FILE="$ACC/gibt-es-nicht.json" "$SANDBOX" exec --agent-root "$root" \
     --image "$IMAGE" --env-file "$ENV_FILE" -- true 2>&1)" || rc=$?
   finish_agent "$root"
-  assert_eq 3 "$rc" "Exit ohne Nachweis"
+  assert_eq 91 "$rc" "Exit ohne Nachweis"
   assert_contains "$out" "Nachweis"
 }
 
@@ -212,14 +211,14 @@ timeout_kills() {
 promote_end_to_end() {
   local root label out rc=0
   root="$(agent promote)"
-  label="$(printf '%s' "$root" | shasum -a 256 | cut -c1-12)"
+  label="$("$SANDBOX" label --agent-root "$root")"
   cat >"$root/manifest.json" <<'JSON'
 {"max_total_bytes": 4096, "files": [
   {"path": "out/ok.txt", "max_bytes": 1024}, {"path": "out/link", "max_bytes": 1024},
   {"path": "out/h2.txt", "max_bytes": 1024}, {"path": "out/fifo", "max_bytes": 1024}]}
 JSON
   out="$(python3 -I "$HERE/../promote.py" --scratch "$root/scratch" --artifacts "$root/artifacts" \
-    --manifest "$root/manifest.json" --container-label "security-audit.agent=$label" -- \
+    --manifest "$root/manifest.json" --container-label "$label" -- \
     "$SANDBOX" exec --agent-root "$root" --image "$IMAGE" --env-file "$ENV_FILE" --unverified-for-acceptance -- \
     sh -c 'cd /scratch/out && echo inhalt > ok.txt && echo h > h1.txt && ln h1.txt h2.txt &&
       ln -s /etc/passwd link && mkfifo fifo' 2>/dev/null)" || rc=$?
@@ -252,7 +251,7 @@ json.dump(fp, open(sys.argv[3], "w"))
 ' "$fp" "$ACC/proof-ok.json" "$ACC/proof-bad.json"
   out="$(SANDBOX_ACCEPTANCE_FILE="$ACC/proof-bad.json" "$SANDBOX" exec --agent-root "$root" \
     --image "$IMAGE" --env-file "$ENV_FILE" -- true 2>&1)" || rc=$?
-  assert_eq 3 "$rc" "Exit bei verfälschtem Nachweis"
+  assert_eq 91 "$rc" "Exit bei verfälschtem Nachweis"
   assert_contains "$out" "sandbox_run_sha256"
   SANDBOX_ACCEPTANCE_FILE="$ACC/proof-ok.json" "$SANDBOX" exec --agent-root "$root" \
     --image "$IMAGE" --env-file "$ENV_FILE" -- true >/dev/null 2>&1 || fail "Lauf mit passendem Nachweis scheiterte"
@@ -260,17 +259,38 @@ json.dump(fp, open(sys.argv[3], "w"))
   finish_agent "$root"
 }
 
+# Zielcode ersetzt scratch/rw/data durch einen Symlink. Das nächste exec auf
+# denselben Agent-Root darf ihm nicht folgen.
+rw_symlink_refused() {
+  local root out rc=0
+  root="$AGENTS/rwlink"
+  "$SANDBOX" cleanup --agent-root "$root" >/dev/null 2>&1
+  rm -rf "$root"
+  "$SANDBOX" prepare --agent-root "$root" --target "$REPO" --scratch-size 64m --rw data >/dev/null
+  sx "$root" --rw data -- sh -c 'mv /scratch/rw/data /scratch/rw/data.alt && ln -s / /scratch/rw/data' >/dev/null
+  [ -L "$root/scratch/rw/data" ] || fail "Symlink wurde nicht angelegt"
+  out="$("$SANDBOX" exec --agent-root "$root" --image "$IMAGE" --env-file "$ENV_FILE" \
+    --unverified-for-acceptance --rw data -- ls /src/data 2>&1)" || rc=$?
+  finish_agent "$root"
+  assert_eq 91 "$rc" "Exit bei Symlink in scratch/rw"
+  assert_contains "$out" "Symlink"
+}
+
 cleanup_after_sigterm() {
   local root pid
   root="$(agent term)"
   "$SANDBOX" exec --agent-root "$root" --image "$IMAGE" --env-file "$ENV_FILE" \
-    --unverified-for-acceptance --pg "$PG_IMAGE" -- sleep 60 >/dev/null 2>&1 &
+    --unverified-for-acceptance --pg "$PG_IMAGE" --timeout 77 -- sleep 60 >/dev/null 2>&1 &
   pid=$!
   sleep 12
   [ -n "$(containers_with_label "$root")" ] || fail "Container liefen gar nicht"
   kill -TERM "$pid"
   wait "$pid" 2>/dev/null || true
   assert_eq "" "$(containers_with_label "$root")" "Container nach SIGTERM"
+  # Der Host-Wächter (sleep 77 + 15) darf den Abbruch nicht überleben. Er
+  # träfe sonst später einen neuen Lauf auf demselben Agent-Root.
+  sleep 1
+  if pgrep -f 'sleep 92' >/dev/null; then fail "Host-Wächter läuft nach SIGTERM weiter"; fi
   finish_agent "$root"
 }
 
@@ -279,7 +299,7 @@ cleanup_after_sigterm() {
 ALL_CASES="guard_refuses_without_proof guard_detects_fingerprint_mismatch network_external_blocked
   network_loopback_to_pg network_loopback_to_redis env_only_allowlist readonly_src_and_root scratch_visible_in_sequence hardening
   vm_sees_only_audit_root pids_limit memory_oom fsize_limit disk_limit timeout_kills promote_end_to_end
-  cleanup_after_sigterm"
+  rw_symlink_refused cleanup_after_sigterm"
 PROOF="$HOME/security-audit-skill/.sandbox-acceptance.json"
 
 # Schreibt den Nachweis nur nach einem vollständigen, grünen Lauf.

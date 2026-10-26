@@ -30,6 +30,9 @@ make_repo() {
     printf 'X=1\n' > vendor/pkg/.env.example
     printf 'export TOKEN=echt\n' > vendor/pkg/.envrc
     printf 'export TOKEN=echt\n' > .envrc
+    mkdir -p .ssh .aws conf
+    for f in .npmrc .netrc .pgpass id_rsa id_ed25519 .ssh/config .aws/credentials conf/cert.p12 conf/cert.pfx \
+      conf/prod.env .env-local; do printf 'geheim\n' > "$f"; done
     ln -s ../pkg/a.php vendor/bin/tool
     mkdir -p public/build/assets
     printf '{}' > public/build/manifest.json
@@ -64,7 +67,8 @@ prepare_copies_tracked_untracked_and_vendor() {
 prepare_excludes_ignored_and_secrets() {
   local src="$AGENTS/copy/src" f
   [ -f "$src/app.php" ] || fail "src/ fehlt"
-  for f in ignored.txt .env .env.testing .envrc storage/oauth.key vendor/pkg/.env.example vendor/pkg/.envrc .git; do
+  for f in ignored.txt .env .env.testing .envrc storage/oauth.key vendor/pkg/.env.example vendor/pkg/.envrc .git \
+    .npmrc .netrc .pgpass id_rsa id_ed25519 .ssh .aws conf/cert.p12 conf/cert.pfx conf/prod.env .env-local; do
     [ ! -e "$src/$f" ] || fail "$f darf nicht in src/ liegen"
   done
 }
@@ -104,29 +108,39 @@ prepare_includes_extra_paths() {
 }
 
 prepare_rejects_include_outside_repo() {
-  assert_exit 2 prepare_agent inclbad --include ../x
+  assert_exit 90 prepare_agent inclbad --include ../x
+}
+
+label_is_canonical() {
+  local a b c
+  a="$("$SANDBOX" label --agent-root "$AGENTS/copy")"
+  b="$("$SANDBOX" label --agent-root "$AGENTS/copy/")"
+  c="$("$SANDBOX" label --agent-root "$AGENTS//copy")"
+  assert_contains "$a" "security-audit.agent="
+  assert_eq "$a" "$b" "Label mit Schrägstrich am Ende"
+  assert_eq "$a" "$c" "Label mit doppeltem Schrägstrich"
 }
 
 prepare_refuses_outside_audit_root() {
-  assert_exit 3 "$SANDBOX" prepare --agent-root "$HOME/sa-ausserhalb/agents/a" --target "$REPO"
+  assert_exit 91 "$SANDBOX" prepare --agent-root "$HOME/sa-ausserhalb/agents/a" --target "$REPO"
   [ ! -e "$HOME/sa-ausserhalb" ] || fail "Ordner ausserhalb wurde angelegt"
 }
 
 prepare_refuses_bad_agent_id() {
-  assert_exit 3 prepare_agent Bad
-  assert_exit 3 prepare_agent com1
-  assert_exit 3 prepare_agent -x
+  assert_exit 91 prepare_agent Bad
+  assert_exit 91 prepare_agent com1
+  assert_exit 91 prepare_agent -x
 }
 
 prepare_refuses_second_run() {
   printf 'markiert\n' >> "$AGENTS/copy/src/app.php"
-  assert_exit 3 prepare_agent copy
+  assert_exit 91 prepare_agent copy
   assert_contains "$(cat "$AGENTS/copy/src/app.php")" "markiert"
 }
 
 prepare_refuses_target_without_git() {
   mkdir -p "$BASE/kein-repo"
-  assert_exit 3 "$SANDBOX" prepare --agent-root "$AGENTS/nogit" --target "$BASE/kein-repo"
+  assert_exit 91 "$SANDBOX" prepare --agent-root "$AGENTS/nogit" --target "$BASE/kein-repo"
 }
 
 cleanup_removes_copy_and_image_keeps_artifacts() {
@@ -148,6 +162,7 @@ run_case prepare_writes_source_ref
 run_case prepare_mirrors_rw_dirs
 run_case prepare_includes_extra_paths
 run_case prepare_rejects_include_outside_repo
+run_case label_is_canonical
 run_case prepare_refuses_outside_audit_root
 run_case prepare_refuses_bad_agent_id
 run_case prepare_refuses_second_run

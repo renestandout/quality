@@ -88,8 +88,10 @@ Der Agent-Root folgt dem Skill:
    - Legt `scratch.dmg` fester Grösse an und hängt es unter `scratch/` ein.
    - Kopiert nach `src/`, was Git kennt (versioniert oder neu und nicht
      ignoriert), dazu `vendor/` und jeden Pfad aus `--include`.
-   - Lässt immer weg: `.git/`, `node_modules/`, `.ddev/`, `.env`, `.env.*`,
-     `.envrc`, `auth.json`, `*.key`, `*.pem`.
+   - Lässt immer weg: `.git/`, `node_modules/`, `.ddev/`, `.ssh/`, `.aws/`,
+     `.env`, `.env.*`, `.env-*`, `*.env`, `.envrc`, `auth.json`, `.npmrc`,
+     `.netrc`, `.pgpass`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `id_rsa*`,
+     `id_ecdsa*`, `id_ed25519*`, `id_dsa*`.
    - `--rw PATH` spiegelt die Ordner von `PATH` nach `scratch/rw/PATH`. `exec`
      hängt sie beschreibbar über `src/PATH`.
    - Schreibt `src.ref.json` mit Commit und Dirty-Status.
@@ -103,21 +105,34 @@ Der Agent-Root folgt dem Skill:
 3. Ausführen und übernehmen:
 
    ```
-   label="$(printf '%s' "$ROOT" | shasum -a 256 | cut -c1-12)"
+   label="$(security-audit/sandbox-run.sh label --agent-root "$ROOT")"
    python3 -I security-audit/promote.py --scratch "$ROOT/scratch" --artifacts "$ROOT/artifacts" \
-     --manifest "$ROOT/manifest.json" --container-label "security-audit.agent=$label" -- \
+     --manifest "$ROOT/manifest.json" --container-label "$label" -- \
      security-audit/sandbox-run.sh exec --agent-root "$ROOT" \
        --image ddev/ddev-webserver:v1.25.4-rankscan-built --pg postgres:17-rankscan-built \
        --env-file security-audit/env/rankscan.env --rw storage --rw bootstrap/cache -- \
        php vendor/bin/phpunit --do-not-cache-result --log-junit /scratch/out/junit.xml tests/Feature/...
    ```
 
-   `promote.py` gibt eine JSON-Zeile aus: `command_exit`, `promoted`,
-   `rejected` mit Grund. Exit 0: alles übernommen. Exit 1: mindestens eine
-   Datei abgelehnt. Exit 3: ein Container lief noch, nichts übernommen.
+   `promote.py` gibt eine JSON-Zeile aus: `command_exit`, `interrupted`,
+   `containers_left`, `promoted`, `rejected` mit Grund. Exit 0: alles
+   übernommen. Exit 1: mindestens eine Datei abgelehnt. Exit 3: ein Container
+   lief noch, nichts übernommen.
+
+   `--container-label` ist Pflicht. Nur Tests ohne Docker nutzen stattdessen
+   `--no-container-check`. Ctrl-C und SIGTERM gibt `promote.py` an `exec`
+   weiter und wartet, bis `exec` die Container entfernt hat.
 
 4. Aufräumen: `security-audit/sandbox-run.sh cleanup --agent-root "$ROOT"`.
    `artifacts/`, `manifest.json` und `src.ref.json` bleiben.
+
+Pro Agent-Root gibt es genau eine Übernahme: `promote.py` verlangt ein leeres
+`artifacts/`, und ein zweites `prepare` wird verweigert. Für einen weiteren Lauf
+mit Übernahme nimmt der Parent eine neue Agent-ID.
+
+Ergebnisse liest der Parent nur aus `artifacts/`, nie direkt aus `scratch/`.
+Zielcode kann in `scratch/` Symlinks auf Host-Dateien legen. Auf dem Host zeigen
+sie auf die echte Datei, z. B. einen SSH-Schlüssel.
 
 Ein vollständiges Beispiel ist `tests/probe-rankscan.sh`.
 
@@ -139,8 +154,14 @@ Ein vollständiges Beispiel ist `tests/probe-rankscan.sh`.
 Postgres und Redis laufen ebenfalls gehärtet, mit Wegwerf-Daten auf tmpfs und
 Dummy-Zugang `db`/`db`, Datenbank `db_test`.
 
-`exec` gibt den Exit-Code des Befehls zurück. Eigene Codes: `2` Aufruffehler,
-`3` Vorbedingung verweigert (Nachweis, VM, Pfad, Denylist). `124`: Zeitlimit.
+`exec` gibt den Exit-Code des Befehls zurück. Eigene Codes: `90` Aufruffehler,
+`91` Vorbedingung verweigert (Nachweis, VM, Pfad, Denylist, Symlink in
+`scratch/rw/`). `124`: Zeitlimit. `prepare` und `cleanup` nutzen dieselben
+Codes. Die hohen Werte verhindern eine Verwechslung mit Codes des Zielcodes.
+
+Vor jedem Mount prüft `exec`, dass kein Teil von `scratch/rw/<pfad>` ein
+Symlink ist. Zielcode aus einem früheren Lauf könnte dort sonst einen Symlink
+auf einen fremden Ordner legen.
 
 `SANDBOX_ACCEPTANCE_FILE` setzt einen anderen Pfad für den Nachweis. Das ist nur
 für die Tests gedacht. `--unverified-for-acceptance` überspringt die Prüfung des
@@ -157,7 +178,7 @@ Sandbox vorhanden. Zielcode führst du nur über diese Befehle aus:
 - Aufräumen: <quality>/security-audit/sandbox-run.sh cleanup
 Anleitung: <quality>/security-audit/README.md, Abschnitt «Ablauf pro Agent».
 
-Erfüllte Kontrollen (Abnahmetest grün am <Datum>, 17 Fälle):
+Erfüllte Kontrollen (Abnahmetest grün am <Datum>, 18 Fälle):
 - Kein Netz nach aussen. Nur Loopback zu Postgres und Redis im selben Namespace.
 - Leere Umgebung aus einer Allowlist mit Dummy-Werten; HOME, TMPDIR und Caches auf scratch/.
 - Root-Dateisystem und Quelle nur lesbar; einziger Schreibort ist scratch/.
@@ -169,8 +190,11 @@ Erfüllte Kontrollen (Abnahmetest grün am <Datum>, 17 Fälle):
 Regeln:
 - Nur der Parent ruft prepare, exec, cleanup und promote.py auf und schreibt das Manifest.
 - Hunter und Verifier schreiben nur nach scratch/input/.
-- Verweigert exec den Lauf (Exit 3), führe keinen Zielcode aus. Melde die Spur
-  als needs_validation mit der Meldung von exec als Blocker.
+- Verweigert exec den Lauf (command_exit 90 oder 91 im Bericht von promote.py),
+  führe keinen Zielcode aus. Melde die Spur als needs_validation mit der
+  Meldung von exec als Blocker.
+- Ergebnisse nur aus artifacts/ lesen. Dateien in scratch/ nie öffnen oder
+  lesen; nur nach scratch/input/ schreiben.
 ```
 
 ## Tests

@@ -168,6 +168,21 @@ class PromoteFileTest(Fixture):
         self.assertEqual(results[1].status, "promoted")
 
 
+class IoErrorTest(Fixture):
+    def tearDown(self) -> None:
+        os.chmod(self.artifacts, 0o700)
+        super().tearDown()
+
+    def test_io_error_is_reported_not_raised(self) -> None:
+        self.write("out/a.txt", b"x")
+        self.write("b.txt", b"y")
+        os.chmod(self.artifacts, 0o500)
+        manifest = Manifest((Entry("out/a.txt", 10), Entry("b.txt", 10)), 100)
+        results = promote.promote_all(self.scratch_fd, self.artifacts_fd, manifest)
+        self.assertEqual([r.status for r in results], ["rejected", "rejected"])
+        self.assertTrue(results[0].reason.startswith("io-error:"), results[0].reason)
+
+
 class ManifestTest(Fixture):
     def load(self, data: object) -> Manifest:
         path = os.path.join(self.base, "manifest.json")
@@ -196,7 +211,7 @@ class ManifestTest(Fixture):
 
 
 class CliTest(Fixture):
-    def run_cli(self, *cmd: str, manifest: object = None) -> "tuple[int, dict]":
+    def run_cli(self, *cmd: str, manifest: object = None, label: tuple = ("--no-container-check",)) -> "tuple[int, dict]":
         import subprocess
 
         mpath = os.path.join(self.base, "manifest.json")
@@ -204,7 +219,8 @@ class CliTest(Fixture):
             json.dump(manifest or {"max_total_bytes": 100, "files": [{"path": "out/a.txt", "max_bytes": 100}]}, f)
         proc = subprocess.run(
             [sys.executable, "-I", os.path.join(os.path.dirname(HERE), "promote.py"),
-             "--scratch", self.scratch, "--artifacts", self.artifacts, "--manifest", mpath, "--", *cmd],
+             "--scratch", self.scratch, "--artifacts", self.artifacts, "--manifest", mpath,
+             *label, "--", *cmd],
             capture_output=True, text=True,
         )
         report = json.loads(proc.stdout) if proc.stdout.strip() else {}
@@ -244,6 +260,41 @@ class CliTest(Fixture):
         rc, report = self.run_cli("/gibt/es/nicht")
         self.assertEqual(report["command_exit"], 127)
         self.assertEqual(rc, 1)
+
+    def test_cli_requires_container_check_choice(self) -> None:
+        rc, _ = self.run_cli(*self.writer(), label=())
+        self.assertEqual(rc, 2)
+
+    def test_cli_forwards_sigterm_and_waits(self) -> None:
+        import subprocess
+        import time
+
+        mpath = os.path.join(self.base, "manifest.json")
+        with open(mpath, "w") as f:
+            json.dump({"max_total_bytes": 100, "files": [{"path": "out/a.txt", "max_bytes": 100}]}, f)
+        target = os.path.join(self.scratch, "out", "a.txt")
+        # Das Kind braucht nach dem Signal 2 s zum Aufräumen und schreibt dann.
+        child = ("import signal, sys, time\n"
+                 "def h(n, f):\n"
+                 "    time.sleep(2)\n"
+                 f"    open({target!r}, 'w').write('aufgeraeumt')\n"
+                 "    sys.exit(143)\n"
+                 "signal.signal(signal.SIGTERM, h)\n"
+                 "signal.signal(signal.SIGINT, h)\n"
+                 "time.sleep(30)\n")
+        proc = subprocess.Popen(
+            [sys.executable, "-I", os.path.join(os.path.dirname(HERE), "promote.py"),
+             "--scratch", self.scratch, "--artifacts", self.artifacts, "--manifest", mpath,
+             "--no-container-check", "--", sys.executable, "-c", child],
+            stdout=subprocess.PIPE, text=True,
+        )
+        time.sleep(1)
+        proc.send_signal(signal.SIGTERM)
+        out, _ = proc.communicate(timeout=20)
+        report = json.loads(out)
+        self.assertEqual(report["command_exit"], 143)
+        self.assertEqual(report["interrupted"], "SIGTERM")
+        self.assertEqual(report["promoted"], [{"path": "out/a.txt", "bytes": 11}])
 
     def test_open_roots_not_inheritable(self) -> None:
         s_fd, a_fd = promote.open_roots(self.scratch, self.artifacts)
