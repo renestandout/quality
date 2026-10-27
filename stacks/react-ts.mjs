@@ -2,12 +2,15 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
+  JS_LOCKFILES,
   LINT_STRICT_FLAG,
+  failingCommand,
   findBinary,
   hasOnPath,
   lintStrictArgs,
   missingToolHint,
   packageManagerFor,
+  readJson,
   scriptCommand,
 } from '../lib/tools.mjs'
 
@@ -27,12 +30,65 @@ import {
  * @returns {Record<string, string>}
  */
 function packageScripts(dir) {
-  const file = join(dir, 'package.json')
-  if (!existsSync(file)) return {}
-  try {
-    return JSON.parse(readFileSync(file, 'utf8')).scripts ?? {}
-  } catch {
-    return {}
+  return readJson(join(dir, 'package.json'))?.scripts ?? {}
+}
+
+/**
+ * Wie man die Abhängigkeiten installiert. npm ci bricht ohne Lockfile ab;
+ * dann bleibt npm install.
+ *
+ * @param {StackContext} ctx
+ * @returns {string}
+ */
+function installCommand(ctx) {
+  const pm = packageManagerFor(ctx.dir, ctx.root) ?? 'npm'
+  if (pm === 'pnpm') return 'pnpm install'
+  if (pm === 'yarn') return 'yarn install'
+  const bases = [ctx.dir, ctx.root].filter(Boolean)
+  const locked = bases.some((base) => JS_LOCKFILES.some((f) => existsSync(join(base, f))))
+  return locked ? 'npm ci' : 'npm install'
+}
+
+/**
+ * Ein Schritt, der scheitert, weil node_modules fehlt — sonst null.
+ *
+ * Ohne node_modules endete ein npm-Skript mit exit 127 und
+ * "sh: eslint: command not found". prettier und tsc entfielen still, und ein
+ * Projekt ohne Skripte bestand das Gate mit null Prüfungen. Das ist eine
+ * kaputte Umgebung, keine Entscheidung des Projekts. Der Schritt scheitert
+ * deshalb und sagt, wie man installiert.
+ *
+ * Installiert heisst: mindestens eine deklarierte Abhängigkeit liegt in
+ * node_modules der Komponente oder der Repo-Wurzel. Ein Ordner node_modules
+ * allein genügt nicht. In der Wurzel liegen sonst oft nur deren eigene
+ * Werkzeuge, etwa husky, und das Skript der Komponente endet wieder mit
+ * exit 127. Yarn Plug'n'Play legt nie node_modules an; dort zählt .pnp.cjs.
+ *
+ * Fehlt nur ein einzelnes Werkzeug, bleibt es beim Skip: dann nutzt das
+ * Projekt es nicht. Ein package.json ohne Abhängigkeiten braucht kein
+ * node_modules.
+ *
+ * @param {StackContext} ctx
+ * @param {string} name
+ * @returns {Step | null}
+ */
+function uninstalledStep(ctx, name) {
+  const manifest = readJson(join(ctx.dir, 'package.json'))
+  const deps = Object.keys({ ...manifest?.dependencies, ...manifest?.devDependencies })
+  if (deps.length === 0) return null
+  const bases = [ctx.dir, ctx.root].filter(Boolean)
+  const installed = bases.some(
+    (base) =>
+      existsSync(join(base, '.pnp.cjs')) ||
+      deps.some((dep) => existsSync(join(base, 'node_modules', dep))),
+  )
+  if (installed) return null
+  return {
+    name: `${name} (${ctx.component.path})`,
+    ...failingCommand(
+      `node_modules fehlt (${ctx.component.path}).\nInstallieren mit:  ${installCommand(ctx)}\n`,
+    ),
+    cwd: ctx.dir,
   }
 }
 
@@ -172,6 +228,8 @@ export default {
 
   /** @param {StackContext} ctx */
   fmt(ctx) {
+    const uninstalled = uninstalledStep(ctx, 'prettier')
+    if (uninstalled) return uninstalled
     const tool = findBinary('prettier', { dir: ctx.dir, root: ctx.root, kind: 'js' })
     if (!tool) return { name: 'prettier', skip: missingToolHint('prettier', 'js') }
     const { paths: excluded, problem } = excludedByGit(ctx.dir)
@@ -193,6 +251,8 @@ export default {
 
   /** @param {StackContext} ctx */
   lint(ctx) {
+    const uninstalled = uninstalledStep(ctx, 'lint')
+    if (uninstalled) return uninstalled
     // Sind einzelne Dateien gemeint (Editor-Hook), muss der Linter direkt
     // aufgerufen werden: ein npm-Skript nimmt keine Dateiargumente entgegen
     // und würde jedes Mal das ganze Projekt prüfen — im Hook-Betrieb wäre das
@@ -233,6 +293,8 @@ export default {
 
   /** @param {StackContext} ctx */
   types(ctx) {
+    const uninstalled = uninstalledStep(ctx, 'tsc')
+    if (uninstalled) return uninstalled
     const tool = findBinary('tsc', { dir: ctx.dir, root: ctx.root, kind: 'js' })
     if (!tool) return { name: 'tsc', skip: missingToolHint('tsc', 'js') }
     // Projektreferenzen (tsconfig.app.json / tsconfig.node.json) brauchen den
@@ -256,6 +318,8 @@ export default {
       const [cmd, ...args] = ctx.component.testCommand.split(' ')
       return { name: `tests (${ctx.component.path})`, cmd, args, cwd: ctx.dir }
     }
+    const uninstalled = uninstalledStep(ctx, 'tests')
+    if (uninstalled) return uninstalled
     const vitest = findBinary('vitest', { dir: ctx.dir, root: ctx.root, kind: 'js' })
     if (vitest) {
       const args = ['run']
@@ -273,6 +337,8 @@ export default {
   build(ctx) {
     const scripts = packageScripts(ctx.dir)
     if (!scripts.build) return { name: 'build', skip: 'kein build-Skript' }
+    const uninstalled = uninstalledStep(ctx, 'build')
+    if (uninstalled) return uninstalled
     return runScript('build', ctx, 'build')
   },
 }
