@@ -1,6 +1,6 @@
 # Self-hosted Runner für die Quality-Gates
 
-Stand: 2026-08-18, VM-Angaben 2026-10-03, Bot-PRs 2026-10-27. Kontext: die Quality-Workflows verbrauchten 71 % der
+Stand: 2026-08-18, VM-Angaben 2026-10-03, Bot-PRs und Wartung 2026-10-27. Kontext: die Quality-Workflows verbrauchten 71 % der
 GitHub-Actions-Minuten (Messung in
 `adboard/docs/2026-08-18_github-actions-verbrauch.md`). Self-hosted Runner
 kosten bei GitHub null Minuten, auch in privaten Repos. Workflows, Required
@@ -72,7 +72,9 @@ burstbar.
 
 Hetzner Cloud `quality-runner`, Falkenstein (fsn1), Ubuntu 24.04,
 Typ `cpx32` — 4 vCPU (AMD EPYC Genoa) / 8 GB, 35,49 EUR/Mt. IP **178.105.222.60**,
-User `root`, Key `~/.ssh/id_ed25519`. Firewall `runner-ssh-only` lässt nur
+User `root`. Zugang haben zwei Keys: `~/.ssh/id_ed25519` vom MacBook und
+seit dem 27.10.2026 `~/.ssh/id_ed25519` vom Mac mini (`agentmini@mini`).
+Firewall `runner-ssh-only` lässt nur
 Port 22 herein; der Runner selbst pollt GitHub über ausgehendes HTTPS und
 braucht keinen offenen Port.
 
@@ -131,6 +133,9 @@ und `libapache2-mod-php` sind bewusst nicht dabei: Ihr postinst würde FPM
 wieder aktivieren. Die Dateien ausserhalb von dpkg bleiben deshalb auf
 8.4.24 und 8.3.33.
 
+Am 27.10.2026 führte die PPA 8.4.27 und 8.3.36 im Paketindex. Der nächste
+Update läuft also wieder über apt, mit dem Befehl oben.
+
 Prüfe laufende Jobs nicht mit `pgrep -f Runner.Worker`. Das Muster steht in
 der eigenen Befehlszeile der SSH-Shell, und `pgrep` meldet dann immer einen
 Job.
@@ -165,6 +170,8 @@ jede Runner-Instanz gehört zu genau einem Repository. Verteilung:
 | renestandout/adboard        | 1         | zwei kurze Jobs                                          |
 | renestandout/rankscanpage   | 1         | zwei kurze Jobs                                          |
 | renestandout/rankscanmautic | 1         | shellcheck + gitleaks, Sekunden                          |
+| renestandout/calcup         | 1         | Grund nicht dokumentiert                                 |
+| renestandout/resplan        | 1         | Grund nicht dokumentiert                                 |
 
 **Eine Instanz je Repo, ausser bei rankscan.** Der naheliegende Gedanke ist,
 mehrere Runner zu registrieren, damit die Jobs eines Laufs parallel starten.
@@ -439,12 +446,45 @@ gh api repos/<owner/repo>/actions/runners -q '.runners[].status'
 **Fallback:** ein Einzeiler-Commit zurück auf `runs-on: ubuntu-latest`.
 Das Freikontingent (2'000 min/Mt.) trägt den Übergang.
 
-**Wartung:** der Runner aktualisiert sich selbst. Docker räumt ein
-wöchentlicher Prune-Cron ab (legt `provision.sh` an). Ubuntu patcht über
-unattended-upgrades.
+**Wartung:** Stand 27.10.2026, alles legt `provision.sh` an.
+
+| Was                         | Wie                                                   |
+| --------------------------- | ----------------------------------------------------- |
+| Runner                      | aktualisiert sich selbst                              |
+| Ubuntu noble, -security     | unattended-upgrades, Vorgabe von Ubuntu               |
+| Ubuntu noble-updates        | unattended-upgrades, `52unattended-upgrades-local`    |
+| Kernel-Neustart             | automatisch um 03:00, wenn ein Update ihn verlangt    |
+| Docker, gh, pgdg            | von Hand, wenn kein Job läuft                         |
+| PHP aus der PPA ondrej/php  | von Hand, wenn kein Job läuft, Befehle unter „Die VM" |
+| Docker-Images und -Volumes  | `/etc/cron.daily/docker-prune`                        |
+| verwaiste Service-Container | `/etc/cron.hourly/runner-stale-containers`            |
+
+Die Ubuntu-Vorgabe von unattended-upgrades installiert nur das Release- und
+das Security-Pocket und startet nie neu. Am 27.10.2026 wartete ein
+Kernel-Update seit dem 15.10. auf den Neustart, und 47 Pakete aus
+noble-updates lagen offen. Deshalb ergänzt `provision.sh` die Datei
+`/etc/apt/apt.conf.d/52unattended-upgrades-local`. Die Datei
+`50unattended-upgrades` bleibt unverändert, ein Paket-Update überschreibt
+sonst die Anpassung.
+
+Der Neustart um 03:00 bricht einen Job ab, der gerade läuft. Das ist der
+Preis dafür, dass niemand an den Neustart denken muss. Die Runner-Dienste
+sind `enabled` und melden sich danach von selbst bei GitHub zurück.
+
+Den Stand prüfst du so:
+
+```bash
+ssh root@<vm> 'uptime; ls /var/run/reboot-required 2>/dev/null; apt list --upgradable 2>/dev/null | wc -l; df -h /; docker system df'
+```
 
 **Anonyme Volumes wachsen still.** `docker system prune` löscht keine Volumes.
 Jeder `services:`-Container hinterlässt aber eines. Am 03.10.2026 lagen 634
 davon mit 29 GB auf der 80-GB-Platte. Seither ruft der Cron zusätzlich
 `docker volume prune -f` auf. Prüfen lässt sich der Stand mit
 `docker system df`.
+
+Wöchentlich reichte das Ende Oktober nicht mehr. Ein Volume belegt bis
+220 MB. Am 26.10.2026 kamen 102 Volumes mit 10,8 GB dazu, am 27.10. lagen
+208 Volumes mit 23 GB auf der Platte und nur noch 18 GB waren frei. Seit dem
+27.10.2026 läuft der Cron deshalb täglich. Die Images behalten ihre 7 Tage,
+damit der Cache warm bleibt.
