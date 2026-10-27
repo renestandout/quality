@@ -24,14 +24,14 @@ startet ddev nie selbst.
 JS/TS-Projekt:
 
 ```bash
-npm  install -D github:renestandout/quality#v0.2.23 prettier
-pnpm add     -D github:renestandout/quality#v0.2.23 prettier
+npm  install -D github:renestandout/quality#v0.2.24 prettier
+pnpm add     -D github:renestandout/quality#v0.2.24 prettier
 ```
 
 Python-Projekt — über npm, mit einer `package.json`, die nur dafür da ist:
 
 ```bash
-npm install -D github:renestandout/quality#v0.2.23
+npm install -D github:renestandout/quality#v0.2.24
 pip  install ruff mypy pytest pip-audit
 ```
 
