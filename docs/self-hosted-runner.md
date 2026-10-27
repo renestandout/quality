@@ -489,7 +489,9 @@ ssh root@<vm> 'while ps -eo cmd | grep -q "[R]unner\.Worker"; do echo "Job aktiv
 Prüfe danach `systemctl is-active docker`, die 7 Runner-Dienste und den
 Status bei GitHub (`gh api repos/renestandout/<repo>/actions/runners`). Nur
 rankscan nutzt einen `services:`-Container (`postgres:17`). Ein grüner
-rankscan-Lauf bestätigt deshalb das Update.
+rankscan-Lauf auf der VM bestätigt deshalb das Update. Nimm dafür einen
+Push auf `main`, keinen Bot-PR. Bot-PRs laufen auf `ubuntu-latest` und
+prüfen die VM nicht.
 
 Letztes Update am 27.10.2026: Docker 29.7.2 → 29.9.2, containerd 2.3.3 →
 2.4.2, runc 1.4.3 → 1.5.2, buildx 0.36.1 → 0.38.1, compose 5.5.0 → 5.6.1,
