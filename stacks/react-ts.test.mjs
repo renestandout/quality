@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -260,4 +260,144 @@ test('fmt: der Hinweis übernimmt nur die erste Zeile der git-Meldung', (t) => {
   const step = reactTs.fmt?.(context(dir))
   assert.ok(step && 'note' in step && step.note, 'fmt meldet einen Hinweis')
   assert.equal(step.note, '.git/info/exclude nicht ausgewertet (fatal: eins)')
+})
+
+/**
+ * Ein Projekt mit package.json und Abhängigkeiten, aber ohne node_modules —
+ * so wie ein Worktree nach "worktree-setup.sh --no-node".
+ *
+ * @param {Record<string, unknown>} [pkg] Felder, die das package.json ergänzen
+ * @returns {string}
+ */
+function uninstalled(pkg = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'quality-react-ts-no-modules-'))
+  const manifest = {
+    name: 'app',
+    private: true,
+    scripts: { lint: 'eslint src', test: 'vitest', build: 'vite build' },
+    devDependencies: { eslint: '^9.0.0', typescript: '^5.0.0', vitest: '^3.0.0' },
+    ...pkg,
+  }
+  writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest))
+  writeFileSync(join(dir, 'package-lock.json'), '{}')
+  return dir
+}
+
+/**
+ * Führt einen Schritt aus und gibt Exit-Code und Fehlerausgabe zurück.
+ *
+ * @param {import('../lib/types.mjs').Step | undefined} step
+ * @returns {{ code: number | null, stderr: string }}
+ */
+function runStep(step) {
+  assert.ok(step && !step.skip && step.cmd, 'der Schritt ist ausführbar, nicht übersprungen')
+  const run = spawnSync(step.cmd, step.args ?? [], { cwd: step.cwd, encoding: 'utf8' })
+  return { code: run.status, stderr: run.stderr }
+}
+
+for (const verb of /** @type {const} */ (['fmt', 'lint', 'types', 'test', 'build'])) {
+  test(`${verb}: ohne node_modules scheitert der Schritt mit einem Hinweis auf npm ci`, (t) => {
+    // Über ein npm-Skript endete der Schritt mit exit 127 und
+    // "sh: eslint: command not found". prettier und tsc fielen still weg.
+    const dir = uninstalled()
+    t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+    const { code, stderr } = runStep(reactTs[verb]?.(context(dir)))
+    assert.equal(code, 1)
+    assert.match(stderr, /node_modules fehlt/)
+    assert.match(stderr, /npm ci/)
+  })
+}
+
+test('lint: ohne node_modules nennt der Hinweis den Paketmanager des Projekts', (t) => {
+  const dir = uninstalled({ packageManager: 'pnpm@9.12.0' })
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+  const { stderr } = runStep(reactTs.lint?.(context(dir)))
+  assert.match(stderr, /pnpm install/)
+})
+
+test('lint: node_modules in der Repo-Wurzel genügt einer Unterkomponente', (t) => {
+  // In einem Monorepo mit Workspaces liegt node_modules oft nur in der Wurzel.
+  const root = uninstalled()
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  mkdirSync(join(root, 'node_modules', 'eslint'), { recursive: true })
+  const dir = join(root, 'web')
+  mkdirSync(dir)
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ scripts: { lint: 'eslint src' }, devDependencies: { eslint: '^9.0.0' } }),
+  )
+
+  const step = reactTs.lint?.(context(dir, { root }))
+  assert.ok(step && step.cmd === 'npm', 'das lint-Skript läuft wie bisher')
+})
+
+test('types: mit node_modules, aber ohne typescript, entfällt tsc weiterhin', (t) => {
+  // Fehlt nur ein Werkzeug, nutzt das Projekt es nicht. Das bleibt ein Skip.
+  const dir = uninstalled()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  mkdirSync(join(dir, 'node_modules', 'eslint'), { recursive: true })
+
+  assert.ok(reactTs.types?.(context(dir))?.skip)
+})
+
+test('types: ein package.json ohne Abhängigkeiten braucht kein node_modules', (t) => {
+  const dir = uninstalled({ devDependencies: undefined })
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+  assert.ok(reactTs.types?.(context(dir))?.skip)
+})
+
+test('test: ein eigener Testbefehl läuft auch ohne node_modules unverändert', (t) => {
+  // Der Befehl aus quality.yml gehört dem Projekt; er braucht vielleicht gar keine Pakete.
+  const dir = uninstalled()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+  const component = /** @type {StackContext['component']} */ ({
+    path: '.',
+    stack: 'react-ts',
+    testCommand: 'node --test',
+  })
+  const step = reactTs.test?.(context(dir, { component }))
+  assert.ok(step && step.cmd === 'node', 'der eigene Testbefehl bleibt')
+})
+
+test('lint: ohne Lockfile nennt der Hinweis npm install statt npm ci', (t) => {
+  // npm ci bricht ohne package-lock.json ab. Der Hinweis selbst schlüge fehl.
+  const dir = uninstalled()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  rmSync(join(dir, 'package-lock.json'))
+
+  const { stderr } = runStep(reactTs.lint?.(context(dir)))
+  assert.match(stderr, /npm install/)
+  assert.doesNotMatch(stderr, /npm ci/)
+})
+
+test('lint: node_modules der Wurzel ohne die Pakete der Komponente zählt nicht', (t) => {
+  // Die Wurzel hat nur ihre eigenen Werkzeuge installiert, etwa husky.
+  // Das lint-Skript der Komponente endete sonst wieder mit exit 127.
+  const root = uninstalled()
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  mkdirSync(join(root, 'node_modules', 'husky'), { recursive: true })
+  const dir = join(root, 'web')
+  mkdirSync(dir)
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ scripts: { lint: 'oxlint src' }, devDependencies: { oxlint: '^1.0.0' } }),
+  )
+
+  const { code, stderr } = runStep(reactTs.lint?.(context(dir, { root })))
+  assert.equal(code, 1)
+  assert.match(stderr, /node_modules fehlt/)
+})
+
+test("lint: ein Projekt mit Yarn Plug'n'Play gilt ohne node_modules als installiert", (t) => {
+  // Mit nodeLinker: pnp legt yarn nie node_modules an, sondern .pnp.cjs.
+  const dir = uninstalled({ packageManager: 'yarn@4.5.0' })
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  writeFileSync(join(dir, '.pnp.cjs'), '')
+
+  const step = reactTs.lint?.(context(dir))
+  assert.ok(step && step.cmd !== process.execPath, 'das lint-Skript läuft wie bisher')
 })
