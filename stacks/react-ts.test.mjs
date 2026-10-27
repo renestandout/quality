@@ -443,14 +443,16 @@ function ddevProject({ platform, scripts = { build: 'vite build' } }) {
   mkdirSync(bin, { recursive: true })
   mkdirSync(join(dir, 'node_modules', 'vitest'))
   for (const tool of ['prettier', 'tsc', 'vitest', 'oxlint']) writeFileSync(join(bin, tool), '')
-  const binding = `node_modules/@rolldown/binding-${platform}-arm64`
+  // cpu folgt dem Host: sonst gälte das Binding im x64-CI auch für die
+  // Host-Plattform als fremd.
+  const binding = `node_modules/@rolldown/binding-${platform}-${process.arch}`
   writeFileSync(
     join(dir, 'node_modules', '.package-lock.json'),
     JSON.stringify({
       lockfileVersion: 3,
       packages: {
         'node_modules/vitest': { version: '4.1.12' },
-        [binding]: { version: '1.0.0', os: [platform], cpu: ['arm64'], optional: true },
+        [binding]: { version: '1.0.0', os: [platform], cpu: [process.arch], optional: true },
       },
     }),
   )
