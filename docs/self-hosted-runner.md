@@ -1,6 +1,6 @@
 # Self-hosted Runner für die Quality-Gates
 
-Stand: 2026-08-18, VM-Angaben 2026-10-03. Kontext: die Quality-Workflows verbrauchten 71 % der
+Stand: 2026-08-18, VM-Angaben 2026-10-03, Bot-PRs 2026-10-27. Kontext: die Quality-Workflows verbrauchten 71 % der
 GitHub-Actions-Minuten (Messung in
 `adboard/docs/2026-08-18_github-actions-verbrauch.md`). Self-hosted Runner
 kosten bei GitHub null Minuten, auch in privaten Repos. Workflows, Required
@@ -144,7 +144,10 @@ Lock-Verzeichnis per sudo an; fehlt sudo, scheitert es nicht, sondern wartet
 endlos — der Job hängt bis zum Timeout, ohne eine brauchbare Fehlermeldung.
 Sicherheit kostet das nichts: wer einen PR schreiben kann, führt hier ohnehin
 eigenen Code aus (Tests, Build, composer-Scripts). Die Schutzgrenze ist, dass
-nur private Repos ohne Fork-PRs hier laufen.
+nur private Repos ohne Fork-PRs hier laufen. Dependabot durchbricht diese
+Annahme: der Bot schreibt PRs, ohne dass ein Mensch den Code gesehen hat.
+Deshalb laufen Bot-PRs nicht hier, siehe „Bot-PRs nie auf dem geteilten
+Runner".
 
 **shellcheck muss mit.** Auf `ubuntu-latest` ist es vorinstalliert, der
 mautic-Workflow ruft es direkt auf. Es war der eine Befehl, der sonst gefehlt
@@ -229,8 +232,13 @@ Runner ein eigenes, automatisch rotiertes Credential.
 In `.github/workflows/quality.yml` je Job:
 
 ```yaml
-runs-on: [self-hosted, linux]
+runs-on: ${{ github.event.pull_request.user.type == 'Bot' && 'ubuntu-latest' || fromJSON('["self-hosted","linux"]') }}
 ```
+
+Bot-PRs laufen damit auf `ubuntu-latest`, alles andere auf der VM. Der Grund
+steht unter „Bot-PRs nie auf dem geteilten Runner". Die Beispiele in
+`examples/ci-split-static-tests.yml` und `examples/ci-monorepo-php-js.yml`
+zeigen den vollständigen Job.
 
 **Ausnahme 1: `setup-php` muss raus.** Die Action stellt die PHP-Version per
 `update-alternatives` **systemweit** um. Auf einem geteilten Host gewinnt bei
@@ -254,6 +262,24 @@ Die Versionen samt Extensions liegen auf der VM (`provision.sh`). Nebeneffekt:
 der Setup-Schritt entfällt, das spart je Job rund eine halbe Minute. Für einen
 Rückweg auf `ubuntu-latest` muss `setup-php` wieder hinein — dort gibt es kein
 `/usr/bin/php8.4`.
+
+Bot-PRs laufen auf `ubuntu-latest`. Ein Job braucht deshalb beide Wege, und
+`runner.environment` wählt den passenden:
+
+```yaml
+- uses: shivammathur/setup-php@v2
+  if: runner.environment == 'github-hosted'
+  with:
+    php-version: '8.4'
+    coverage: none
+
+- name: PHP 8.4 in den PATH
+  if: runner.environment == 'self-hosted'
+  run: |
+    mkdir -p "$RUNNER_TEMP/php-bin"
+    ln -sf /usr/bin/php8.4 "$RUNNER_TEMP/php-bin/php"
+    echo "$RUNNER_TEMP/php-bin" >> "$GITHUB_PATH"
+```
 
 Dieselbe Vorsicht gilt für jede Action, die Systemzustand ändert statt nur den
 Job-Workspace: auf einem Wegwerf-Runner ist das folgenlos, hier nicht.
@@ -338,6 +364,70 @@ Quality-Exception: CI-Umzug auf self-hosted Runner, Kostenprojekt
 **Nur für private Repos.** Fork-PRs führen fremden Code auf dem Runner aus.
 Wird ein Repo public, MUSS das Setup neu bewertet werden (ephemere Runner
 oder zurück auf GitHub-Hosted).
+
+### Bot-PRs nie auf dem geteilten Runner
+
+**Regel:** Dependabot-PRs und andere automatisch erzeugte PRs laufen nie auf
+dem geteilten Runner, sondern auf `ubuntu-latest`.
+
+**Begründung:** Ein Bot-PR installiert neue Paketversionen, bevor ein Mensch
+sie gelesen hat, und auf dem persistenten Runner mit `NOPASSWD:ALL` hätte ein
+kompromittiertes Paket Root und könnte spätere Läufe aller Repos auf der VM
+manipulieren.
+
+Befund aus der Security-Prüfung von rankscan am 26.10.2026. Drei Punkte
+machen den Runner zum gemeinsamen Ziel. `register.sh` registriert ohne
+`--ephemeral`, Caches und Dateien bleiben also zwischen Läufen liegen.
+`provision.sh` gibt dem User `runner` die Gruppe `docker` und
+`NOPASSWD:ALL`. Und sechs Repos teilen die VM: rankscan, rankscanpage,
+adboard, calcup, resplan und rankscanmautic. Ein manipulierter Lauf könnte
+auch die Check-Ergebnisse fälschen, die rankscan für Release-Tags liest.
+
+Die Bedingung prüft den Autor des PRs
+(`github.event.pull_request.user.type == 'Bot'`), nicht `github.actor`.
+`github.actor` ist, wer den Lauf ausgelöst hat. Pusht ein Mensch einen Fix
+auf den Dependabot-Zweig, wäre er der actor, und der Lauf landete mit den
+Paketen des Bots wieder auf der VM. Der Push auf `main` nach dem Merge läuft
+auf der VM: dann hat ein Mensch den PR gelesen.
+
+Die Regel gilt auch für Repos ohne `dependabot.yml`. Dependabot-
+Sicherheitsupdates sind eine Repo-Einstellung und brauchen die Datei nicht.
+
+**Tamper-Check:** Die Umstellung ändert `.github/workflows/quality.yml`. Der
+Tamper-Check meldet das als `protected.changed` („CI-Workflow geändert"),
+wenn ein Mensch den Commit schreibt. Der Commit braucht deshalb den Trailer,
+den nur ein Mensch setzt:
+
+```
+Quality-Exception: Bot-PRs vom geteilten Runner auf ubuntu-latest
+```
+
+Ein Bot-Autor darf Workflows ohne Meldung ändern (`botMayChange`). Das gilt
+für Versionsbumps von Actions, nicht für diese Umstellung.
+
+### Vorschläge, nicht umgesetzt
+
+Die Regel oben schützt vor Bot-PRs. Die Ursache bleibt: jeder Job ist auf
+der VM faktisch root, und alle Repos teilen einen User. Drei Wege, sortiert
+nach Aufwand:
+
+1. **`NOPASSWD:ALL` eingrenzen.** `setup-php` braucht sudo für sein
+   Lock-Verzeichnis. Der Symlink-Weg oben braucht gar kein sudo. Eine
+   sudoers-Regel nur für die Befehle, die verbleibende Actions wirklich
+   aufrufen, nimmt Root weg. Offen: welche Befehle das sind. Das zeigt erst
+   ein Lauf mit `sudo`-Protokoll. Die Gruppe `docker` bleibt dabei faktisch
+   root, solange Jobs `services:` nutzen.
+2. **Ein Unix-User je Repo.** Je Repo eine Runner-Instanz unter eigenem User
+   mit eigenem Home. Caches und Workspaces sind dann getrennt. Hilft nur
+   zusammen mit Punkt 1, sonst ist jeder User wieder root.
+3. **Ephemere Runner.** `--ephemeral` beendet die Instanz nach einem Job.
+   Erst mit einer frischen VM oder einem frischen Container je Job ist das
+   eine Schutzgrenze. Der Preis: der warme PHPStan-Cache und die
+   composer-/npm-Caches fallen weg, und es braucht einen Dienst, der Runner
+   nachregistriert.
+
+Empfehlung: Punkt 1 zuerst, er ist klein und nimmt den grössten Hebel weg.
+Danach Punkt 2. Punkt 3 erst, wenn ein Repo public wird.
 
 **Ausfall heisst hängend, nicht rot.** Fällt die VM aus, warten Checks
 endlos statt zu scheitern. Überwachung je Repo:

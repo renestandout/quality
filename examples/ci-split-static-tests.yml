@@ -11,6 +11,9 @@
 #
 # Nach .github/workflows/quality.yml im Projekt kopieren und Versionen,
 # Dienste und Testbefehle anpassen.
+#
+# Die Jobs laufen auf dem geteilten self-hosted Runner, ausser in einem PR,
+# den ein Bot eröffnet hat. Einzelheiten in docs/self-hosted-runner.md.
 
 name: Quality
 
@@ -27,7 +30,15 @@ jobs:
   # Blockierend. Hängt am Diff: derselbe Stand ergibt dasselbe Ergebnis, heute
   # wie in drei Monaten.
   quality:
-    runs-on: ubuntu-latest
+    # Bot-PRs (Dependabot, Renovate) laufen auf ubuntu-latest. Sie führen
+    # composer install und npm ci mit neuen Paketversionen aus, bevor ein
+    # Mensch sie gelesen hat. Auf dem persistenten Runner hätte ein
+    # kompromittiertes Paket Root und träfe spätere Läufe aller Repos.
+    #
+    # Geprüft wird der Autor des PRs, nicht github.actor. Pusht ein Mensch
+    # einen Fix auf den Dependabot-Zweig, ist er der actor. Die Pakete
+    # stammen trotzdem vom Bot.
+    runs-on: ${{ github.event.pull_request.user.type == 'Bot' && 'ubuntu-latest' || fromJSON('["self-hosted","linux"]') }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -39,10 +50,23 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Zwei Wege zu PHP, je nach Runner. setup-php stellt die Version per
+      # update-alternatives systemweit um. Auf dem geteilten Runner träfe das
+      # gleichzeitige Jobs anderer Repos. Dort genügt ein job-lokaler Symlink
+      # auf das PHP der VM. ubuntu-latest hat kein /usr/bin/php8.4 und
+      # braucht deshalb setup-php.
       - uses: shivammathur/setup-php@v2
+        if: runner.environment == 'github-hosted'
         with:
           php-version: '8.4'
           coverage: none
+
+      - name: PHP 8.4 in den PATH
+        if: runner.environment == 'self-hosted'
+        run: |
+          mkdir -p "$RUNNER_TEMP/php-bin"
+          ln -sf /usr/bin/php8.4 "$RUNNER_TEMP/php-bin/php"
+          echo "$RUNNER_TEMP/php-bin" >> "$GITHUB_PATH"
 
       - uses: actions/setup-node@v7
         with:
@@ -144,7 +168,8 @@ jobs:
   # Ebenfalls blockierend — und deshalb ebenfalls ein Required Check. Steht er
   # nicht in der Liste, lässt sich mit roten Tests mergen.
   tests:
-    runs-on: ubuntu-latest
+    # Bot-PRs auf ubuntu-latest, siehe quality-Job.
+    runs-on: ${{ github.event.pull_request.user.type == 'Bot' && 'ubuntu-latest' || fromJSON('["self-hosted","linux"]') }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -156,7 +181,10 @@ jobs:
           POSTGRES_DB: db_test
           POSTGRES_USER: db
           POSTGRES_PASSWORD: db
-        ports: ['5432:5432']
+        # Nur der Container-Port. Auf dem geteilten Runner stritten sich
+        # gleichzeitige Läufe sonst um denselben Host-Port. Den zugelosten
+        # Port reicht der Schritt "Tests" als DB_PORT weiter.
+        ports: [5432]
         options: >-
           --health-cmd="pg_isready -U db"
           --health-interval=5s
@@ -165,10 +193,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # PHP je nach Runner, siehe quality-Job.
       - uses: shivammathur/setup-php@v2
+        if: runner.environment == 'github-hosted'
         with:
           php-version: '8.4'
           coverage: none
+
+      - name: PHP 8.4 in den PATH
+        if: runner.environment == 'self-hosted'
+        run: |
+          mkdir -p "$RUNNER_TEMP/php-bin"
+          ln -sf /usr/bin/php8.4 "$RUNNER_TEMP/php-bin/php"
+          echo "$RUNNER_TEMP/php-bin" >> "$GITHUB_PATH"
 
       - uses: actions/setup-node@v7
         with:
@@ -206,7 +243,10 @@ jobs:
       - name: Build
         run: vendor/bin/quality full --only build
 
+      # Der job-Kontext ist nur in Schritten verfügbar, nicht auf Job-Ebene.
       - name: Tests
+        env:
+          DB_PORT: ${{ job.services.postgres.ports['5432'] }}
         run: vendor/bin/quality full --only test
 
   # Informierend, bewusst KEIN Required Check.
@@ -215,7 +255,8 @@ jobs:
   # veröffentlichtes CVE oder ein geänderter gitleaks-Regelsatz färbt sie rot,
   # ohne dass jemand eine Zeile angefasst hat.
   audit:
-    runs-on: ubuntu-latest
+    # Bot-PRs auf ubuntu-latest, siehe quality-Job.
+    runs-on: ${{ github.event.pull_request.user.type == 'Bot' && 'ubuntu-latest' || fromJSON('["self-hosted","linux"]') }}
     timeout-minutes: 10
     # Nur Lesen. `pull-requests: write` stand hier für die PR-Kommentare von
     # gitleaks-action — die Action ist raus, das Recht damit auch.
@@ -227,10 +268,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      # PHP je nach Runner, siehe quality-Job.
       - uses: shivammathur/setup-php@v2
+        if: runner.environment == 'github-hosted'
         with:
           php-version: '8.4'
           coverage: none
+
+      - name: PHP 8.4 in den PATH
+        if: runner.environment == 'self-hosted'
+        run: |
+          mkdir -p "$RUNNER_TEMP/php-bin"
+          ln -sf /usr/bin/php8.4 "$RUNNER_TEMP/php-bin/php"
+          echo "$RUNNER_TEMP/php-bin" >> "$GITHUB_PATH"
 
       - uses: actions/setup-node@v7
         with:
