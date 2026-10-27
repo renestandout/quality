@@ -167,6 +167,31 @@ Parent wiederholt einen solchen Lauf mit einer neuen Agent-ID, also mit neuem
 neuen Agent-Roots. Führt der Parent denselben Verifier per Nachricht weiter,
 zählt das nicht als neuer Agenten-Aufruf im Budget.
 
+Für diese Wiederholung gelten drei Grenzen:
+
+- Pro Spur ist genau eine Wiederholung erlaubt.
+- Braucht die Wiederholung einen frischen Verifier, nimmt der Parent ihn aus der
+  Validierungs-Reserve des Skills («Cost budget»). Reicht die Reserve nicht,
+  gilt die Regel des Skills für ein erschöpftes Validierungs-Budget.
+- Scheitert auch die Wiederholung am eigenen Prüftest, bleibt die Spur ein
+  ungeprüfter Kandidat im Ledger, mit Grund `verifier_harness_failed`. Der
+  Parent meldet sie nicht als `needs_validation`. Ein Fehler im eigenen Test ist
+  kein Blocker ausserhalb der Sandbox.
+
+Den Auftrag an den Verifier schreibt der Parent. Er schreibt dort nie «genau ein
+Sandbox-Lauf» ohne Ausnahme. Er übernimmt diesen Absatz wörtlich:
+
+```
+You get one sandbox run; put everything you need into it. Exception: if the
+run fails in your own test (test error, wrong fixture or wrong assertion API,
+not a result of the target code), the lane is not used up. Do not return a
+record then. Return a new sandbox_request with the corrected test instead; the
+parent runs it once more under a new agent ID. Only one such retry per lane.
+If the retry also fails in your own test, do not return needs_validation.
+Say so in one sentence; the parent keeps the lane as an unvalidated
+candidate.
+```
+
 Ergebnisse liest der Parent nur aus `artifacts/`, nie direkt aus `scratch/`.
 Zielcode kann in `scratch/` Symlinks auf Host-Dateien legen. Auf dem Host zeigen
 sie auf die echte Datei, z. B. einen SSH-Schlüssel.
@@ -240,7 +265,13 @@ Regeln:
 - Scheitert der Zielbefehl am eigenen Prüftest (Fehler im Test, nicht im
   Zielcode), wiederhole den Lauf mit einer neuen Agent-ID. Die Spur ist damit
   nicht verbraucht. Führst du denselben Verifier per Nachricht weiter, zählt
-  das nicht als neuer Agenten-Aufruf.
+  das nicht als neuer Agenten-Aufruf. Pro Spur ist genau eine Wiederholung
+  erlaubt. Ein frischer Verifier dafür kommt aus der Validierungs-Reserve.
+  Scheitert auch die Wiederholung am Test, bleibt die Spur ein ungeprüfter
+  Kandidat (Grund verifier_harness_failed), nicht needs_validation.
+- In den Auftrag an jeden Verifier gehört der englische Absatz aus dem README,
+  Abschnitt «Ablauf pro Agent». Schreibe nie «exactly one sandbox run» ohne
+  diese Ausnahme.
 - PHP-Befehle mit php -d memory_limit=<Wert> starten, Default 128M. Hängt eine
   Spur vom Speicher ab, den Wert der Produktion nachbilden oder als Annahme nennen.
 ```

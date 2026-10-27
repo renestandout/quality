@@ -128,3 +128,14 @@ Empfehlung: **A jetzt, C danach.** Der Skill widerspricht der lokalen Regel
 nicht, er schweigt nur. Der Auftragsblock reicht deshalb, wenn er den Satz für
 den Verifier mitliefert und die Obergrenze nennt. C schliesst die Lücke dauerhaft
 und macht B überflüssig.
+
+## 6. Umsetzung
+
+Option A ist umgesetzt in `security-audit/README.md`:
+
+- Abschnitt «Ablauf pro Agent»: drei Grenzen (eine Wiederholung pro Spur,
+  Verifier aus der Validierungs-Reserve, `verifier_harness_failed` statt
+  `needs_validation`) und ein englischer Absatz für den Verifier-Auftrag.
+- Auftragsblock: dieselben Grenzen und der Verweis auf diesen Absatz.
+
+Option C (Rückmeldung an Upstream) ist offen.
