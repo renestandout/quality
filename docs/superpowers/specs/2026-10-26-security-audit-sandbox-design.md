@@ -155,6 +155,7 @@ zählt deshalb nicht zur beschreibbaren Fläche.
 Drei Unterbefehle. Der Parent ruft sie nacheinander auf.
 
 **`prepare`**
+
 - Argumente: Agent-Root, Ziel-Repo, Scratch-Grösse, beschreibbare Unterpfade.
 - Prüft: Agent-Root liegt unter `$HOME` und ausserhalb des Ziel-Repos. Die
   Agent-ID passt auf `^[a-z0-9][a-z0-9_-]{0,63}$` und ist kein
@@ -178,6 +179,7 @@ Drei Unterbefehle. Der Parent ruft sie nacheinander auf.
   beschreibbaren Unterpfade (nur Ordner, keine Dateien).
 
 **`exec`**
+
 - Argumente: Agent-Root, Image, env-file, Limits, Befehl.
 - Startet Postgres (optional) und Redis (optional) gehärtet, siehe unten.
 - Startet den Test-Container mit diesen Optionen:
@@ -203,6 +205,7 @@ Drei Unterbefehle. Der Parent ruft sie nacheinander auf.
   mit dem Label, auch bei Abbruch (trap).
 
 **`cleanup`**
+
 - Entfernt verbliebene Container mit dem Label.
 - Hängt das Image aus, bei Bedarf mit `-force`.
 - Löscht `src/` und `scratch.dmg`.
@@ -227,15 +230,15 @@ Drei Unterbefehle. Der Parent ruft sie nacheinander auf.
 
 ### Default-Limits
 
-| Limit | Default | Option |
-|---|---|---|
-| CPUs | 2 | `--cpus` |
-| Speicher | 1 GB | `--memory` |
-| Swap | gleich Speicher | fest, nicht änderbar |
-| Prozesse | 256 | `--pids` |
-| Dateigrösse | 64 MB | `--fsize` |
-| Scratch | 512 MB | `--scratch-size` (bei `prepare`) |
-| Laufzeit | 300 s | `--timeout` |
+| Limit       | Default         | Option                           |
+| ----------- | --------------- | -------------------------------- |
+| CPUs        | 2               | `--cpus`                         |
+| Speicher    | 1 GB            | `--memory`                       |
+| Swap        | gleich Speicher | fest, nicht änderbar             |
+| Prozesse    | 256             | `--pids`                         |
+| Dateigrösse | 64 MB           | `--fsize`                        |
+| Scratch     | 512 MB          | `--scratch-size` (bei `prepare`) |
+| Laufzeit    | 300 s           | `--timeout`                      |
 
 Die Werte sind **meine Entscheidung**. Ein rankscan-Feature-Test braucht
 deutlich weniger.
@@ -264,7 +267,7 @@ deutlich weniger.
 - Die 11 Schritte, umgesetzt:
   1. Pfad prüfen: nicht absolut, nicht leer, kein `.` oder `..`.
   2. Elternordner einzeln mit `os.open(..., O_DIRECTORY | O_NOFOLLOW,
-     dir_fd=...)` ablaufen. Nie per Pfad neu öffnen.
+dir_fd=...)` ablaufen. Nie per Pfad neu öffnen.
   3. Datei mit `O_RDONLY | O_NOFOLLOW | O_NONBLOCK` öffnen.
   4. `fstat`: regulär, `st_nlink == 1`, Grösse unter beiden Limits.
   5. Beim Lesen mitzählen und abbrechen, sobald die Grösse das Limit oder die
@@ -289,19 +292,19 @@ deutlich weniger.
 Jeder Fall prüft ein konkretes Signal der Grenze, nicht nur «Befehl
 scheitert».
 
-| Grenze | Versuch im Container | Erwartetes Signal |
-|---|---|---|
-| Netz | `curl` auf `https://example.com` und auf `1.1.1.1` | Exit ≠ 0; nur `lo` in `/proc/net/dev` |
-| Loopback | Verbindung zu Postgres auf `127.0.0.1:5432` | gelingt |
-| Umgebung | `env` | Schlüssel exakt gleich dem env-file |
-| Quelle | Schreiben nach `/src` und `/` | `Read-only file system` |
-| Prozesse | Fork-Bombe | `pids.current` erreicht das Limit; Fork scheitert |
-| Speicher | Speicherfresser | Container `OOMKilled=true` oder Exit 137 mit OOM-Zähler |
-| Dateigrösse | `dd` über `fsize` | `File too large` bzw. SIGXFSZ |
-| Disk | Scratch vollschreiben | `No space left on device` unter der Image-Grösse |
-| Laufzeit | `sleep` länger als `timeout` | Ende nach Limit plus Karenz; Exit 124 oder 137 |
-| Härtung | `id`, `CapEff` in `/proc/self/status`, `NoNewPrivs` | uid 65534, CapEff 0, NoNewPrivs 1 |
-| Aufräumen | nach `exec` | kein Container mit dem Label |
+| Grenze      | Versuch im Container                                | Erwartetes Signal                                       |
+| ----------- | --------------------------------------------------- | ------------------------------------------------------- |
+| Netz        | `curl` auf `https://example.com` und auf `1.1.1.1`  | Exit ≠ 0; nur `lo` in `/proc/net/dev`                   |
+| Loopback    | Verbindung zu Postgres auf `127.0.0.1:5432`         | gelingt                                                 |
+| Umgebung    | `env`                                               | Schlüssel exakt gleich dem env-file                     |
+| Quelle      | Schreiben nach `/src` und `/`                       | `Read-only file system`                                 |
+| Prozesse    | Fork-Bombe                                          | `pids.current` erreicht das Limit; Fork scheitert       |
+| Speicher    | Speicherfresser                                     | Container `OOMKilled=true` oder Exit 137 mit OOM-Zähler |
+| Dateigrösse | `dd` über `fsize`                                   | `File too large` bzw. SIGXFSZ                           |
+| Disk        | Scratch vollschreiben                               | `No space left on device` unter der Image-Grösse        |
+| Laufzeit    | `sleep` länger als `timeout`                        | Ende nach Limit plus Karenz; Exit 124 oder 137          |
+| Härtung     | `id`, `CapEff` in `/proc/self/status`, `NoNewPrivs` | uid 65534, CapEff 0, NoNewPrivs 1                       |
+| Aufräumen   | nach `exec`                                         | kein Container mit dem Label                            |
 
 `tests/test_promote.py` prüft ohne Docker: Symlink (Datei und Ordner im Pfad),
 Hardlink, FIFO (ohne Blockieren), Ordner, Übergrösse pro Datei und gesamt,
@@ -358,6 +361,7 @@ Die README erklärt:
 ## Vertrauensgrenze: eigenes Colima-Profil (Renés Entscheid, Variante B)
 
 Ausgangslage:
+
 - Das Profil `default` hängt das ganze `$HOME` beschreibbar in die VM.
   Geprüft am 2026-10-26: `virtiofs (rw)`, Schreibtest in `$HOME` aus der VM
   gelang.
@@ -365,6 +369,7 @@ Ausgangslage:
   `.env`-Dateien und die ddev-Container im selben Docker-Daemon.
 
 Entscheid: Die Sandbox läuft in einem eigenen Colima-Profil `audit`.
+
 - Das Profil hängt nur `~/security-audit-skill/` ein, beschreibbar. Sonst
   nichts aus `$HOME`.
 - Ressourcen der VM: 4 CPUs, 4 GB, vmType `vz`, virtiofs.

@@ -38,12 +38,14 @@
 ### Task 1: Ordner aus der Paket-Verteilung ausschliessen
 
 **Files:**
+
 - Create: `.gitattributes`
 - Modify: `composer.json` (neuer Schlüssel `archive`)
 - Create: `lib/distribution.test.mjs`
 - Create: `security-audit/.keep` (nur bis Task 2, dann löschen)
 
 **Interfaces:**
+
 - Produces: keine.
 
 - [ ] **Step 1: Test schreiben** – `lib/distribution.test.mjs`, Stil wie `lib/args.test.mjs`:
@@ -59,10 +61,12 @@
 ### Task 2: promote.py – Übernahme einer Datei
 
 **Files:**
+
 - Create: `security-audit/promote.py`
 - Test: `security-audit/tests/test_promote.py`
 
 **Interfaces:**
+
 - Produces (in `promote.py`):
   - `@dataclass(frozen=True) class Entry: path: str; max_bytes: int`
   - `@dataclass(frozen=True) class Manifest: files: tuple[Entry, ...]; max_total_bytes: int`
@@ -96,10 +100,12 @@
 ### Task 3: promote.py – Wrapper um den Lauf
 
 **Files:**
+
 - Modify: `security-audit/promote.py` (`main`)
 - Test: `security-audit/tests/test_promote.py`
 
 **Interfaces:**
+
 - Consumes: `load_manifest`, `promote_all`, `Result` aus Task 2.
 - Produces: CLI
   `promote.py --scratch DIR --artifacts DIR --manifest FILE [--container-label LABEL] -- CMD [ARGS…]`
@@ -121,11 +127,13 @@
 ### Task 4: sandbox-run.sh – prepare und cleanup
 
 **Files:**
+
 - Create: `security-audit/sandbox-run.sh` (ausführbar, `set -euo pipefail`)
 - Create: `security-audit/tests/lib.sh` (Hilfen `assert_eq`, `assert_contains`, `assert_exit`, `fail`, Zähler; Ausgabe `ok`/`FEHLER` je Fall, Exit ≠ 0 bei einem Fehler)
 - Test: `security-audit/tests/test_prepare.sh`
 
 **Interfaces:**
+
 - Produces:
   - `sandbox-run.sh prepare --agent-root DIR --target REPO [--scratch-size 512m] [--rw PATH]…`
     - Exit 3: Agent-Root nicht unter `$HOME/security-audit-skill/`, Agent-Root im Ziel-Repo, Agent-ID ungültig (Agent-ID = Basisname des Agent-Roots), Agent-Root existiert schon nicht leer, Ziel kein Git-Repo, Denylist-Treffer nach dem Kopieren.
@@ -154,10 +162,12 @@
 ### Task 5: sandbox-run.sh – exec, Fingerprint und Abnahme-Sperre
 
 **Files:**
+
 - Modify: `security-audit/sandbox-run.sh`
 - Create: `security-audit/tests/acceptance.sh` (Grundgerüst plus Fälle dieses Tasks)
 
 **Interfaces:**
+
 - Consumes: `prepare`, `cleanup`, `agent_label` aus Task 4.
 - Produces:
   - `sandbox-run.sh fingerprint` – JSON auf stdout: `{"colima_version", "docker_server_version" (Kontext colima-audit), "images": {"repo:tag": "sha256:…"} (alle Images im Kontext, sortiert), "sandbox_run_sha256", "vm_mounts": [Liste der virtiofs-Ziele aus `colima ssh -p audit -- findmnt -t virtiofs -n -o TARGET`]}`.
@@ -187,9 +197,11 @@
 ### Task 6: Abnahme der Ressourcen-Grenzen und Nachweis
 
 **Files:**
+
 - Modify: `security-audit/tests/acceptance.sh`
 
 **Interfaces:**
+
 - Consumes: `exec`, `fingerprint` aus Task 5; `promote.py`-CLI aus Task 3.
 - Produces: Nachweis-Datei (Format in Task 5), geschrieben nur, wenn alle Fälle grün sind. Bei Rot wird eine bestehende Nachweis-Datei gelöscht.
 
@@ -208,10 +220,12 @@
 ### Task 7: Probelauf rankscan
 
 **Files:**
+
 - Create: `security-audit/env/rankscan.env`
 - Create: `security-audit/tests/probe-rankscan.sh`
 
 **Interfaces:**
+
 - Consumes: `prepare`, `exec`, `cleanup`, `promote.py`.
 
 - [ ] **Step 1: env-file schreiben** – nur Dummy-Werte: `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`, `HOME=/scratch/home`, `TMPDIR=/scratch/tmp`, `XDG_CACHE_HOME=/scratch/cache`, `COMPOSER_HOME=/scratch/cache/composer`, `APP_ENV=testing`, `APP_KEY=base64:` + 32 feste Null-Bytes base64 (`AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=`), `DB_CONNECTION=pgsql`, `DB_HOST=127.0.0.1`, `DB_PORT=5432`, `DB_DATABASE=db_test`, `DB_USERNAME=db`, `DB_PASSWORD=db`. Kopfkommentar: «Nur Dummy-Werte. Nie echte Secrets eintragen.»
@@ -225,6 +239,7 @@
 ### Task 8: README
 
 **Files:**
+
 - Create: `security-audit/README.md`
 
 - [ ] **Step 1: README schreiben** – Abschnitte:
