@@ -82,20 +82,32 @@ export default {
   /** @param {StackContext} ctx */
   test(ctx) {
     if (ctx.component.testCommand) {
-      const [cmd, ...args] = ctx.component.testCommand.split(' ')
-      return { name: `tests (${ctx.component.path})`, cmd, args, cwd: ctx.dir }
+      // Wie Pint und PHPStan im ddev-Container, falls er läuft. Auf dem Host
+      // fehlen sonst die Datenbank, das passende PHP und genug memory_limit.
+      // split liefert immer mindestens ein Element.
+      const [cmd, ...args] = /** @type {[string, ...string[]]} */ (
+        ctx.component.testCommand.split(' ')
+      )
+      return {
+        name: `tests (${ctx.component.path})`,
+        ...phpCommand(cmd, args, ctx.dir),
+        cwd: ctx.dir,
+      }
     }
     if (existsSync(join(ctx.dir, 'artisan'))) {
       return {
         name: `artisan test (${ctx.component.path})`,
-        cmd: 'php',
-        args: ['artisan', 'test'],
+        ...phpCommand('php', ['artisan', 'test'], ctx.dir),
         cwd: ctx.dir,
       }
     }
     const phpunit = findBinary('phpunit', { dir: ctx.dir, root: ctx.root, kind: 'php' })
     if (!phpunit) return { name: 'tests', skip: 'weder artisan noch phpunit gefunden' }
-    return { name: `phpunit (${ctx.component.path})`, cmd: phpunit, args: [], cwd: ctx.dir }
+    return {
+      name: `phpunit (${ctx.component.path})`,
+      ...phpCommand(phpunit, [], ctx.dir),
+      cwd: ctx.dir,
+    }
   },
 
   build() {

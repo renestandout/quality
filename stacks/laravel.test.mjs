@@ -212,3 +212,52 @@ test('pint: ohne ddev-Projekt fragt der Adapter ddev gar nicht erst', (t) => {
   assert.equal(step.cmd, join(where.dir, 'vendor', 'bin', 'pint'))
   assert.deepEqual(host.calls(), [])
 })
+
+test('tests: läuft ddev, startet der Adapter test_command im Container', (t) => {
+  // Auf dem Host scheiterte rankscan am memory_limit von 128M und am DB-Host
+  // "db", den es nur im ddev-Netz gibt.
+  fakeHost(t, { status: 'running', php: true })
+  const where = project()
+  t.after(() => rmSync(where.root, { recursive: true, force: true }))
+
+  const ctx = context(where)
+  ctx.component.testCommand = 'php artisan test --parallel --processes=3'
+  const step = runnable(laravel.test?.(ctx))
+  assert.equal(step.cmd, 'ddev')
+  assert.deepEqual(step.args, [
+    'exec',
+    '--raw',
+    '--dir',
+    '/var/www/html',
+    '--',
+    'php',
+    'artisan',
+    'test',
+    '--parallel',
+    '--processes=3',
+  ])
+})
+
+test('tests: ddev gestoppt, aber PHP auf dem Host — test_command auf dem Host wie bisher', (t) => {
+  // So läuft CI: .ddev/config.yaml liegt im Repo, ddev gibt es dort nicht.
+  fakeHost(t, { status: 'stopped', php: true })
+  const where = project()
+  t.after(() => rmSync(where.root, { recursive: true, force: true }))
+
+  const ctx = context(where)
+  ctx.component.testCommand = 'php artisan test'
+  const step = runnable(laravel.test?.(ctx))
+  assert.equal(step.cmd, 'php')
+  assert.deepEqual(step.args, ['artisan', 'test'])
+})
+
+test('tests: ohne test_command startet der Adapter artisan test im Container', (t) => {
+  fakeHost(t, { status: 'running' })
+  const where = project()
+  writeFileSync(join(where.dir, 'artisan'), '')
+  t.after(() => rmSync(where.root, { recursive: true, force: true }))
+
+  const step = runnable(laravel.test?.(context(where)))
+  assert.equal(step.cmd, 'ddev')
+  assert.deepEqual(step.args?.slice(4), ['--', 'php', 'artisan', 'test'])
+})
