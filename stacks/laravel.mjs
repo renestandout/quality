@@ -1,6 +1,13 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { findBinary, missingToolHint, phpCommand } from '../lib/tools.mjs'
+import {
+  failingCommand,
+  findBinary,
+  findDdevRoot,
+  missingToolHint,
+  phpCommand,
+  readJson,
+} from '../lib/tools.mjs'
 
 /** @import { Stack, StackContext, Step } from '../lib/types.mjs' */
 
@@ -11,6 +18,46 @@ import { findBinary, missingToolHint, phpCommand } from '../lib/tools.mjs'
  * Eloquent und Facades). Ein eigener Linter entfällt bewusst: was ein
  * PHP-Linter fände, findet PHPStan gründlicher.
  */
+
+/** Plattform-Anforderungen: composer prüft sie, installiert sie aber nie nach vendor. */
+const PLATFORM = /^(php(-64bit)?|hhvm|composer(-plugin-api|-runtime-api)?|ext-.+|lib-.+)$/
+
+/**
+ * Ein Schritt, der scheitert, weil vendor fehlt — sonst null.
+ *
+ * Ohne vendor entfielen pint und phpstan still. Ein PHP-Projekt ohne artisan
+ * bestand das Gate mit null Prüfungen, und "artisan test" endete mit exit 255
+ * ohne Hinweis auf die Ursache. Das ist eine kaputte Umgebung, keine
+ * Entscheidung des Projekts. Der Schritt scheitert deshalb und sagt, wie man
+ * installiert.
+ *
+ * Installiert heisst: mindestens ein deklariertes Paket liegt in vendor der
+ * Komponente oder der Repo-Wurzel. Dieselbe Regel gilt bei den JS-Stacks für
+ * node_modules. Fehlt nur ein einzelnes Werkzeug, bleibt es beim Skip.
+ *
+ * @param {StackContext} ctx
+ * @param {string} name
+ * @returns {Step | null}
+ */
+function uninstalledStep(ctx, name) {
+  const manifest = readJson(join(ctx.dir, 'composer.json'))
+  const packages = Object.keys({ ...manifest?.require, ...manifest?.['require-dev'] }).filter(
+    (pkg) => !PLATFORM.test(pkg),
+  )
+  if (packages.length === 0) return null
+  const bases = [ctx.dir, ctx.root].filter(Boolean)
+  const installed = bases.some((base) =>
+    packages.some((pkg) => existsSync(join(base, 'vendor', pkg))),
+  )
+  if (installed) return null
+  // Ohne PHP auf dem Host läuft composer nur im Container.
+  const install = findDdevRoot(ctx.dir) ? 'ddev composer install' : 'composer install'
+  return {
+    name: `${name} (${ctx.component.path})`,
+    ...failingCommand(`vendor fehlt (${ctx.component.path}).\nInstallieren mit:  ${install}\n`),
+    cwd: ctx.dir,
+  }
+}
 
 /**
  * @param {StackContext} ctx
@@ -54,6 +101,8 @@ export default {
 
   /** @param {StackContext} ctx */
   fmt(ctx) {
+    const uninstalled = uninstalledStep(ctx, 'pint')
+    if (uninstalled) return uninstalled
     const tool = findBinary('pint', { dir: ctx.dir, root: ctx.root, kind: 'php' })
     if (!tool) return { name: 'pint', skip: missingToolHint('pint', 'php') }
     /** @type {string[]} */
@@ -74,6 +123,8 @@ export default {
 
   /** @param {StackContext} ctx */
   types(ctx) {
+    const uninstalled = uninstalledStep(ctx, 'phpstan')
+    if (uninstalled) return uninstalled
     const tool = findBinary('phpstan', { dir: ctx.dir, root: ctx.root, kind: 'php' })
     if (!tool) return { name: 'phpstan', skip: missingToolHint('phpstan', 'php') }
     return phpstanStep(ctx, tool)
@@ -94,6 +145,8 @@ export default {
         cwd: ctx.dir,
       }
     }
+    const uninstalled = uninstalledStep(ctx, 'tests')
+    if (uninstalled) return uninstalled
     if (existsSync(join(ctx.dir, 'artisan'))) {
       return {
         name: `artisan test (${ctx.component.path})`,
