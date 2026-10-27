@@ -105,17 +105,38 @@ echo "runner ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/runner
 chmod 0440 /etc/sudoers.d/runner
 visudo -c -f /etc/sudoers.d/runner >/dev/null
 
-echo "==> Docker-Aufräum-Cron (wöchentlich)"
+echo "==> Docker-Aufräum-Cron (täglich)"
 # system prune räumt Volumes nicht ab, und "until" lässt sich mit --volumes
 # nicht kombinieren. Jeder services:-Container (postgres, redis) hinterlässt
 # aber ein anonymes Volume. Am 03.10.2026 lagen 634 davon mit 29 GB auf der
 # Platte. volume prune löscht ohne -a nur anonyme, unbenutzte Volumes.
-cat >/etc/cron.weekly/docker-prune <<'EOF'
+# Täglich statt wöchentlich: Ende Oktober 2026 kamen an einem Werktag bis
+# 11 GB Volumes dazu, die 80-GB-Platte wäre vor dem Sonntag voll gewesen.
+# Die Images behalten ihre 7 Tage, damit der Cache warm bleibt.
+cat >/etc/cron.daily/docker-prune <<'EOF'
 #!/bin/sh
 docker system prune -af --filter "until=168h" >/dev/null 2>&1
 docker volume prune -f >/dev/null 2>&1
 EOF
-chmod +x /etc/cron.weekly/docker-prune
+chmod +x /etc/cron.daily/docker-prune
+rm -f /etc/cron.weekly/docker-prune
+
+echo "==> unattended-upgrades: noble-updates und nächtlicher Neustart"
+# Die Ubuntu-Vorgabe installiert nur das Release- und das Security-Pocket
+# und startet nie neu. Am 27.10.2026 wartete ein Kernel-Update seit zwölf
+# Tagen auf den Neustart. Eine eigene Datei statt 50unattended-upgrades:
+# ein Update des Pakets überschreibt sie nicht. Listen in apt.conf.d werden
+# zusammengeführt, die Origins der Vorgabe bleiben also erhalten.
+# Docker, die PPA ondrej/php, gh und pgdg bleiben Handarbeit.
+# Der Neustart um 03:00 bricht einen Job ab, der gerade läuft. Die
+# Runner-Dienste starten danach von selbst.
+cat >/etc/apt/apt.conf.d/52unattended-upgrades-local <<'EOF'
+Unattended-Upgrade::Allowed-Origins {
+	"${distro_id}:${distro_codename}-updates";
+};
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-Time "03:00";
+EOF
 
 # Verwaiste Service-Container: Bricht ein Job ab, räumt der Runner seine
 # services:-Container nicht immer weg. Auf GitHub-Hosted fällt die ganze VM
