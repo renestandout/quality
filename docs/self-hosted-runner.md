@@ -477,6 +477,26 @@ Den Stand prüfst du so:
 ssh root@<vm> 'uptime; ls /var/run/reboot-required 2>/dev/null; apt list --upgradable 2>/dev/null | wc -l; df -h /; docker system df'
 ```
 
+**Docker und gh von Hand aktualisieren.** Ein Neustart von Docker beendet
+laufende `services:`-Container. Der Befehl wartet deshalb, bis kein Job
+läuft. Danach stoppt er die Runner, damit zwischen Prüfung und Neustart
+kein Job startet. Wartende Jobs bleiben bei GitHub in der Warteschlange.
+
+```bash
+ssh root@<vm> 'while ps -eo cmd | grep -q "[R]unner\.Worker"; do echo "Job aktiv, warte"; sleep 30; done; systemctl stop "actions.runner.*"; DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade docker-ce docker-ce-cli docker-ce-rootless-extras containerd.io docker-buildx-plugin docker-compose-plugin gh; systemctl start $(systemctl list-unit-files "actions.runner.*" --no-legend | awk "{print \$1}"); docker version --format "{{.Server.Version}}"'
+```
+
+Prüfe danach `systemctl is-active docker`, die 7 Runner-Dienste und den
+Status bei GitHub (`gh api repos/renestandout/<repo>/actions/runners`). Nur
+rankscan nutzt einen `services:`-Container (`postgres:17`). Ein grüner
+rankscan-Lauf bestätigt deshalb das Update.
+
+Letztes Update am 27.10.2026: Docker 29.7.2 → 29.9.2, containerd 2.3.3 →
+2.4.2, runc 1.4.3 → 1.5.2, buildx 0.36.1 → 0.38.1, compose 5.5.0 → 5.6.1,
+gh 2.97.0 → 2.103.3. Die Release Notes nannten keine Änderung, die
+`services:`-Container oder Runner betrifft. Die entfernten Optionen von
+containerd 2.4 gehören zu CRI, und CRI ist auf der VM abgeschaltet.
+
 **Anonyme Volumes wachsen still.** `docker system prune` löscht keine Volumes.
 Jeder `services:`-Container hinterlässt aber eines. Am 03.10.2026 lagen 634
 davon mit 29 GB auf der 80-GB-Platte. Seither ruft der Cron zusätzlich
