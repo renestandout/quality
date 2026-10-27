@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { findBinary, missingToolHint } from '../lib/tools.mjs'
+import { failingCommand, findBinary, missingToolHint } from '../lib/tools.mjs'
 
-/** @import { Stack, StackContext } from '../lib/types.mjs' */
+/** @import { Stack, StackContext, Step } from '../lib/types.mjs' */
 
 /**
  * Python-Stack.
@@ -53,6 +53,98 @@ function findConfig(dir, { files, section }) {
   return null
 }
 
+/**
+ * Stellen in pyproject.toml, die Abhängigkeiten deklarieren: eine nicht leere
+ * Liste `dependencies`, die Abschnitte für Gruppen und Extras und die
+ * Abhängigkeiten von Poetry.
+ */
+const DECLARES_DEPENDENCIES = [
+  /^\s*dependencies\s*=\s*\[\s*["']/m,
+  /^\[dependency-groups\]/m,
+  /^\[project\.optional-dependencies\]/m,
+  /^\[tool\.poetry\.(group\.[^\]]+\.)?(dev-)?dependencies\]/m,
+]
+
+/**
+ * Die requirements-Dateien mit mindestens einer Anforderung.
+ *
+ * @param {string} dir
+ * @returns {string[]}
+ */
+function requirementFiles(dir) {
+  let names
+  try {
+    names = readdirSync(dir).filter((f) => /^requirements.*\.txt$/.test(f))
+  } catch {
+    return []
+  }
+  return names.filter((name) => {
+    try {
+      return readFileSync(join(dir, name), 'utf8')
+        .split('\n')
+        .some((line) => line.trim() && !line.trim().startsWith('#'))
+    } catch {
+      return false
+    }
+  })
+}
+
+/**
+ * Wie man die Abhängigkeiten installiert. uv.lock zeigt uv an. Sonst nimmt
+ * der Hinweis die requirements-Datei oder installiert das Projekt selbst.
+ *
+ * @param {string} dir
+ * @param {string[]} requirements
+ * @returns {string}
+ */
+function installCommand(dir, requirements) {
+  if (existsSync(join(dir, 'uv.lock'))) return 'uv sync'
+  const pip = 'python3 -m venv .venv && .venv/bin/pip install'
+  const [first] = requirements
+  return first ? `${pip} -r ${first}` : `${pip} -e .`
+}
+
+/**
+ * Ein Schritt, der scheitert, weil .venv fehlt — sonst null.
+ *
+ * Ohne .venv entfielen ruff, mypy und pytest still, und ein Projekt bestand
+ * das Gate mit "0 Prüfungen bestanden". Das ist eine kaputte Umgebung, keine
+ * Entscheidung des Projekts. Der Schritt scheitert deshalb und sagt, wie man
+ * installiert.
+ *
+ * Installiert heisst: es gibt ein .venv in der Komponente oder der
+ * Repo-Wurzel, oder ein venv ist aktiviert (VIRTUAL_ENV). Nur in .venv sucht
+ * findBinary die Werkzeuge; ein Ordner mit anderem Namen hülfe ihm nicht.
+ * Deklariert das Projekt keine Abhängigkeiten, braucht es kein venv. Dann
+ * genügen Werkzeuge im PATH, etwa aus pipx oder Homebrew. Fehlt nur ein
+ * einzelnes Werkzeug, bleibt es beim Skip.
+ *
+ * @param {StackContext} ctx
+ * @param {string} name
+ * @returns {Step | null}
+ */
+function uninstalledStep(ctx, name) {
+  const requirements = requirementFiles(ctx.dir)
+  let pyproject = ''
+  try {
+    pyproject = readFileSync(join(ctx.dir, 'pyproject.toml'), 'utf8')
+  } catch {
+    // Ohne pyproject.toml zählen nur die requirements-Dateien.
+  }
+  const declares = requirements.length > 0 || DECLARES_DEPENDENCIES.some((re) => re.test(pyproject))
+  if (!declares) return null
+  if (process.env.VIRTUAL_ENV) return null
+  const bases = [ctx.dir, ctx.root].filter(Boolean)
+  if (bases.some((base) => existsSync(join(base, '.venv')))) return null
+  return {
+    name: `${name} (${ctx.component.path})`,
+    ...failingCommand(
+      `.venv fehlt (${ctx.component.path}).\nInstallieren mit:  ${installCommand(ctx.dir, requirements)}\n`,
+    ),
+    cwd: ctx.dir,
+  }
+}
+
 const TEST_NAME = /^(test_.*|.*_test)\.py$/
 
 /**
@@ -88,6 +180,8 @@ export default {
 
   /** @param {StackContext} ctx */
   fmt(ctx) {
+    const uninstalled = uninstalledStep(ctx, 'ruff format')
+    if (uninstalled) return uninstalled
     const tool = findBinary('ruff', { dir: ctx.dir, root: ctx.root, kind: 'py' })
     if (!tool) return { name: 'ruff format', skip: missingToolHint('ruff', 'py') }
     return {
@@ -100,6 +194,8 @@ export default {
 
   /** @param {StackContext} ctx */
   lint(ctx) {
+    const uninstalled = uninstalledStep(ctx, 'ruff check')
+    if (uninstalled) return uninstalled
     const tool = findBinary('ruff', { dir: ctx.dir, root: ctx.root, kind: 'py' })
     if (!tool) return { name: 'ruff check', skip: missingToolHint('ruff', 'py') }
     const config = findConfig(ctx.dir, { files: RUFF_FILES, section: 'ruff' })
@@ -118,6 +214,8 @@ export default {
 
   /** @param {StackContext} ctx */
   types(ctx) {
+    const uninstalled = uninstalledStep(ctx, 'mypy')
+    if (uninstalled) return uninstalled
     const tool = findBinary('mypy', { dir: ctx.dir, root: ctx.root, kind: 'py' })
     if (!tool) return { name: 'mypy', skip: missingToolHint('mypy', 'py') }
     const config = findConfig(ctx.dir, { files: MYPY_FILES, section: 'mypy' })
@@ -148,6 +246,8 @@ export default {
       const [cmd, ...args] = ctx.component.testCommand.split(' ')
       return { name: `tests (${ctx.component.path})`, cmd, args, cwd: ctx.dir }
     }
+    const uninstalled = uninstalledStep(ctx, 'pytest')
+    if (uninstalled) return uninstalled
     const tool = findBinary('pytest', { dir: ctx.dir, root: ctx.root, kind: 'py' })
     if (!tool) return { name: 'pytest', skip: missingToolHint('pytest', 'py') }
     if (!hasTests(ctx.dir))

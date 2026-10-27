@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { runStep } from '../lib/run.mjs'
 import laravel from './laravel.mjs'
+import php from './php.mjs'
 
 /** @import { StackContext, Step } from '../lib/types.mjs' */
 
@@ -260,4 +261,113 @@ test('tests: ohne test_command startet der Adapter artisan test im Container', (
   const step = runnable(laravel.test?.(context(where)))
   assert.equal(step.cmd, 'ddev')
   assert.deepEqual(step.args?.slice(4), ['--', 'php', 'artisan', 'test'])
+})
+
+/**
+ * Ein Laravel-Projekt mit composer.json und composer.lock, aber ohne vendor —
+ * so wie ein frischer Worktree vor "composer install".
+ *
+ * @param {{ ddev?: boolean, require?: Record<string, string> }} [options]
+ * @returns {string}
+ */
+function uninstalled({ ddev = false, require } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'quality-laravel-no-vendor-'))
+  const manifest = {
+    require: require ?? { php: '^8.3', 'laravel/framework': '^11.0' },
+    'require-dev': require ? {} : { 'laravel/pint': '^1.0', 'larastan/larastan': '^2.0' },
+  }
+  writeFileSync(join(dir, 'composer.json'), JSON.stringify(manifest))
+  writeFileSync(join(dir, 'composer.lock'), '{}')
+  writeFileSync(join(dir, 'phpstan.neon'), '')
+  writeFileSync(join(dir, 'artisan'), "<?php require __DIR__.'/vendor/autoload.php';\n")
+  if (ddev) {
+    mkdirSync(join(dir, '.ddev'))
+    writeFileSync(join(dir, '.ddev', 'config.yaml'), 'name: demo\n')
+  }
+  return dir
+}
+
+for (const verb of /** @type {const} */ (['fmt', 'types', 'test'])) {
+  test(`${verb}: ohne vendor scheitert der Schritt mit einem Hinweis auf composer install`, async (t) => {
+    // Bisher entfielen pint und phpstan still, und ein PHP-Projekt ohne
+    // artisan bestand das Gate mit null Prüfungen.
+    const dir = uninstalled()
+    t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+    const result = await runStep(runnable(laravel[verb]?.(context({ root: dir, dir }))), {
+      quiet: true,
+    })
+    assert.equal(result.code, 1)
+    assert.match(result.output, /vendor fehlt/)
+    assert.match(result.output, /composer install/)
+  })
+}
+
+test('tests: auch der PHP-Stack ohne artisan scheitert ohne vendor', async (t) => {
+  const dir = uninstalled()
+  rmSync(join(dir, 'artisan'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+  const result = await runStep(runnable(php.test?.(context({ root: dir, dir }))), { quiet: true })
+  assert.equal(result.code, 1)
+  assert.match(result.output, /vendor fehlt/)
+})
+
+test('pint: ohne vendor in einem ddev-Projekt nennt der Hinweis ddev composer install', async (t) => {
+  // Projekte wie rankscan haben kein PHP auf dem Host; composer läuft dort im Container.
+  const dir = uninstalled({ ddev: true })
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+  const result = await runStep(runnable(laravel.fmt?.(context({ root: dir, dir }))), {
+    quiet: true,
+  })
+  assert.match(result.output, /ddev composer install/)
+})
+
+test('phpstan: vendor der Repo-Wurzel genügt einer Unterkomponente', (t) => {
+  fakeHost(t, { status: 'running' })
+  const root = uninstalled()
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  mkdirSync(join(root, 'vendor', 'laravel', 'framework'), { recursive: true })
+  mkdirSync(join(root, 'vendor', 'bin'), { recursive: true })
+  writeFileSync(join(root, 'vendor', 'bin', 'phpstan'), '')
+  const dir = join(root, 'api')
+  mkdirSync(dir)
+  writeFileSync(
+    join(dir, 'composer.json'),
+    JSON.stringify({ require: { 'laravel/framework': '^11' } }),
+  )
+  writeFileSync(join(dir, 'phpstan.neon'), '')
+
+  const step = runnable(laravel.types?.(context({ root, dir })))
+  assert.notEqual(step.cmd, process.execPath)
+})
+
+test('phpstan: mit vendor, aber ohne phpstan, entfällt der Schritt weiterhin', (t) => {
+  // Fehlt nur ein Werkzeug, nutzt das Projekt es nicht. Das bleibt ein Skip.
+  const dir = uninstalled()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  mkdirSync(join(dir, 'vendor', 'laravel', 'framework'), { recursive: true })
+
+  assert.ok(laravel.types?.(context({ root: dir, dir }))?.skip)
+})
+
+test('pint: ein composer.json nur mit Plattform-Anforderungen braucht kein vendor', (t) => {
+  // php und ext-* installiert composer nie nach vendor.
+  const dir = uninstalled({ require: { php: '^8.3', 'ext-json': '*' } })
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+  assert.ok(laravel.fmt?.(context({ root: dir, dir }))?.skip)
+})
+
+test('tests: ein eigener Testbefehl läuft auch ohne vendor unverändert', (t) => {
+  // Der Befehl aus quality.yml gehört dem Projekt, wie bei den JS-Stacks.
+  fakeHost(t, { status: 'stopped', php: true })
+  const dir = uninstalled()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+  const ctx = context({ root: dir, dir })
+  ctx.component.testCommand = 'php artisan test'
+  const step = runnable(laravel.test?.(ctx))
+  assert.equal(step.cmd, 'php')
 })
