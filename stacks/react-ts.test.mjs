@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -401,3 +410,159 @@ test("lint: ein Projekt mit Yarn Plug'n'Play gilt ohne node_modules als installi
   const step = reactTs.lint?.(context(dir))
   assert.ok(step && step.cmd !== process.execPath, 'das lint-Skript läuft wie bisher')
 })
+
+/* ── node_modules aus dem ddev-Container ──────────────────────────────── */
+
+/*
+ * In rankscan installiert worktree-setup.sh node_modules im ddev-Container.
+ * Dort liegen nur die Linux-Bindings von rolldown, Tailwind und lightningcss.
+ * Vitest und der vite-Build scheiterten auf dem Mac mit "Cannot find native
+ * binding". Die Tests nehmen als fremde Plattform immer eine andere als die
+ * des Hosts, damit sie auf macOS und im Linux-CI dasselbe prüfen.
+ */
+
+/** Eine Plattform, die nicht die des Hosts ist. */
+const FOREIGN = process.platform === 'linux' ? 'darwin' : 'linux'
+
+/**
+ * Ein installiertes JS-Projekt mit ddev. node_modules/.package-lock.json
+ * nennt ein natives Paket für die gewünschte Plattform, so wie npm die Datei
+ * nach der Installation schreibt.
+ *
+ * @param {{ platform: string, scripts?: Record<string, string> }} options
+ * @returns {string}
+ */
+function ddevProject({ platform, scripts = { build: 'vite build' } }) {
+  const dir = mkdtempSync(join(tmpdir(), 'quality-react-ts-ddev-'))
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ name: 'app', scripts, devDependencies: { vitest: '^4.0.0' } }),
+  )
+  writeFileSync(join(dir, 'package-lock.json'), '{}')
+  const bin = join(dir, 'node_modules', '.bin')
+  mkdirSync(bin, { recursive: true })
+  mkdirSync(join(dir, 'node_modules', 'vitest'))
+  for (const tool of ['prettier', 'tsc', 'vitest', 'oxlint']) writeFileSync(join(bin, tool), '')
+  const binding = `node_modules/@rolldown/binding-${platform}-arm64`
+  writeFileSync(
+    join(dir, 'node_modules', '.package-lock.json'),
+    JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        'node_modules/vitest': { version: '4.1.12' },
+        [binding]: { version: '1.0.0', os: [platform], cpu: ['arm64'], optional: true },
+      },
+    }),
+  )
+  mkdirSync(join(dir, '.ddev'))
+  writeFileSync(join(dir, '.ddev', 'config.yaml'), 'name: demo\n')
+  return dir
+}
+
+/**
+ * Ersetzt den PATH durch einen Ordner mit einem falschen "ddev". Das Skript
+ * schreibt jeden Aufruf in ein Protokoll und meldet den gewünschten Status
+ * im Format von "ddev describe -j".
+ *
+ * @param {import('node:test').TestContext} t
+ * @param {string} status
+ * @returns {{ calls: () => string[] }}
+ */
+function fakeDdev(t, status) {
+  const bin = mkdtempSync(join(tmpdir(), 'quality-fake-ddev-'))
+  const log = join(bin, 'calls.log')
+  writeFileSync(
+    join(bin, 'ddev'),
+    `#!/bin/sh
+echo "$*" >> "${log}"
+case "$1" in
+  describe) printf '{"level":"info","msg":"","raw":{"status":"${status}"}}\\n' ;;
+esac
+`,
+  )
+  chmodSync(join(bin, 'ddev'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = bin
+  t.after(() => {
+    process.env.PATH = path
+    rmSync(bin, { recursive: true, force: true })
+  })
+  return {
+    calls: () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : []),
+  }
+}
+
+/** Der Anfang jedes Aufrufs im Container. */
+const IN_CONTAINER = ['exec', '--raw', '--dir', '/var/www/html', '--']
+
+test('vitest: node_modules aus dem Container und ddev läuft — vitest läuft im Container', (t) => {
+  fakeDdev(t, 'running')
+  const dir = ddevProject({ platform: FOREIGN })
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+  const step = reactTs.test?.(context(dir))
+  assert.equal(step?.cmd, 'ddev')
+  assert.deepEqual(step?.args, [...IN_CONTAINER, 'node_modules/.bin/vitest', 'run'])
+})
+
+test('vitest: node_modules für den Host — vitest läuft auf dem Host, ddev bleibt unbefragt', (t) => {
+  // So läuft CI und jedes Projekt, das auf dem Host installiert.
+  const host = fakeDdev(t, 'running')
+  const dir = ddevProject({ platform: process.platform })
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+  const step = reactTs.test?.(context(dir))
+  assert.equal(step?.cmd, join(dir, 'node_modules', '.bin', 'vitest'))
+  assert.deepEqual(host.calls(), [])
+})
+
+test('vitest: node_modules aus dem Container, ddev gestoppt — der Schritt nennt ddev start', (t) => {
+  fakeDdev(t, 'stopped')
+  const dir = ddevProject({ platform: FOREIGN })
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+  const { code, stderr } = runStep(reactTs.test?.(context(dir)))
+  assert.equal(code, 1)
+  assert.match(stderr, new RegExp(`node_modules stammt von ${FOREIGN}`))
+  assert.match(stderr, /ddev start/)
+})
+
+test('build: das npm-Skript läuft im Container', (t) => {
+  fakeDdev(t, 'running')
+  const dir = ddevProject({ platform: FOREIGN })
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+  const step = reactTs.build?.(context(dir))
+  assert.equal(step?.cmd, 'ddev')
+  assert.deepEqual(step?.args, [...IN_CONTAINER, 'npm', 'run', '--silent', 'build'])
+})
+
+test('tests: test_command läuft im Container', (t) => {
+  fakeDdev(t, 'running')
+  const dir = ddevProject({ platform: FOREIGN })
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+  const ctx = context(dir)
+  ctx.component.testCommand = 'npx vitest run --project unit'
+  const step = reactTs.test?.(ctx)
+  assert.equal(step?.cmd, 'ddev')
+  assert.deepEqual(step?.args, [...IN_CONTAINER, 'npx', 'vitest', 'run', '--project', 'unit'])
+})
+
+for (const [verb, tool, rest] of /** @type {const} */ ([
+  ['fmt', 'prettier', ['--check', '--ignore-unknown', 'app.ts']],
+  ['lint', 'oxlint', ['app.ts']],
+  ['types', 'tsc', ['--noEmit']],
+])) {
+  test(`${verb}: ${tool} läuft im Container`, (t) => {
+    // oxlint ist selbst ein natives Paket. Eine Regel für alle Schritte ist
+    // sicherer als eine Liste der Werkzeuge, die gerade native Teile haben.
+    fakeDdev(t, 'running')
+    const dir = ddevProject({ platform: FOREIGN })
+    t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+    const step = reactTs[verb]?.(context(dir, { files: ['app.ts'] }))
+    assert.equal(step?.cmd, 'ddev')
+    assert.deepEqual(step?.args, [...IN_CONTAINER, `node_modules/.bin/${tool}`, ...rest])
+  })
+}

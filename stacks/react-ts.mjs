@@ -7,6 +7,7 @@ import {
   failingCommand,
   findBinary,
   hasOnPath,
+  jsCommand,
   lintStrictArgs,
   missingToolHint,
   packageManagerFor,
@@ -112,8 +113,7 @@ function runScript(script, ctx, label, extraArgs = []) {
   const { cmd, args } = scriptCommand(pm, script, extraArgs)
   return {
     name: `${label} (${ctx.component.path})`,
-    cmd,
-    args,
+    ...jsCommand(cmd, args, ctx.dir, ctx.root),
     cwd: ctx.dir,
     note: pm === wanted ? undefined : `${wanted} fehlt im PATH — das Skript läuft mit npm`,
   }
@@ -242,8 +242,12 @@ export default {
     if (targets.length === 0) return { name: 'prettier', skip: 'nur Dateien aus .git/info/exclude' }
     return {
       name: `prettier${ctx.check ? ' (prüfend)' : ''} (${ctx.component.path})`,
-      cmd: tool,
-      args: [ctx.check ? '--check' : '--write', '--ignore-unknown', ...targets],
+      ...jsCommand(
+        tool,
+        [ctx.check ? '--check' : '--write', '--ignore-unknown', ...targets],
+        ctx.dir,
+        ctx.root,
+      ),
       cwd: ctx.dir,
       note: problem,
     }
@@ -276,11 +280,15 @@ export default {
       if (bin) {
         return {
           name: `${tool} (${ctx.component.path})`,
-          cmd: bin,
-          args: [
-            ...(strict ? [LINT_STRICT_FLAG[tool]] : []),
-            ...(wantsFiles && ctx.files ? ctx.files : fallbackArgs),
-          ],
+          ...jsCommand(
+            bin,
+            [
+              ...(strict ? [LINT_STRICT_FLAG[tool]] : []),
+              ...(wantsFiles && ctx.files ? ctx.files : fallbackArgs),
+            ],
+            ctx.dir,
+            ctx.root,
+          ),
           cwd: ctx.dir,
         }
       }
@@ -306,8 +314,7 @@ export default {
     })()
     return {
       name: `tsc (${ctx.component.path})`,
-      cmd: tool,
-      args: hasReferences ? ['-b', '--noEmit'] : ['--noEmit'],
+      ...jsCommand(tool, hasReferences ? ['-b', '--noEmit'] : ['--noEmit'], ctx.dir, ctx.root),
       cwd: ctx.dir,
     }
   },
@@ -315,8 +322,15 @@ export default {
   /** @param {StackContext} ctx */
   test(ctx) {
     if (ctx.component.testCommand) {
-      const [cmd, ...args] = ctx.component.testCommand.split(' ')
-      return { name: `tests (${ctx.component.path})`, cmd, args, cwd: ctx.dir }
+      // split liefert immer mindestens ein Element.
+      const [cmd, ...args] = /** @type {[string, ...string[]]} */ (
+        ctx.component.testCommand.split(' ')
+      )
+      return {
+        name: `tests (${ctx.component.path})`,
+        ...jsCommand(cmd, args, ctx.dir, ctx.root),
+        cwd: ctx.dir,
+      }
     }
     const uninstalled = uninstalledStep(ctx, 'tests')
     if (uninstalled) return uninstalled
@@ -326,7 +340,11 @@ export default {
       // vitest kann gezielt die Tests laufen lassen, die von den geänderten
       // Dateien abhängen — das spart im Hook-Betrieb den Grossteil der Zeit.
       if (ctx.files?.length) args.push('--related', ...ctx.files)
-      return { name: `vitest (${ctx.component.path})`, cmd: vitest, args, cwd: ctx.dir }
+      return {
+        name: `vitest (${ctx.component.path})`,
+        ...jsCommand(vitest, args, ctx.dir, ctx.root),
+        cwd: ctx.dir,
+      }
     }
     const scripts = packageScripts(ctx.dir)
     if (scripts.test) return runScript('test', ctx, 'tests')
