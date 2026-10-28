@@ -467,6 +467,12 @@ noble-updates lagen offen. Deshalb ergänzt `provision.sh` die Datei
 `50unattended-upgrades` bleibt unverändert, ein Paket-Update überschreibt
 sonst die Anpassung.
 
+Der erste echte Lauf mit noble-updates am 28.10.2026 um 06:05 UTC spielte
+alle 54 offenen Pakete ein, ohne Neustart der VM. needrestart startete nur
+Systemdienste wie ssh und systemd-resolved neu, die Runner, docker und
+containerd liefen weiter. In dieser Zeit lief kein Job. Ob needrestart einen
+Runner mit laufendem Job neu startet, ist deshalb noch nicht geprüft.
+
 Der Neustart um 03:00 bricht einen Job ab, der gerade läuft. Das ist der
 Preis dafür, dass niemand an den Neustart denken muss. Die Runner-Dienste
 sind `enabled` und melden sich danach von selbst bei GitHub zurück.
