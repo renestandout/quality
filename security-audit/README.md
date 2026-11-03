@@ -55,6 +55,12 @@ oder anderes ein, verweigert `exec` den Lauf.
    done
    ```
 
+   Für resplan baut `images/build-resplan.sh` das Image `resplan-audit-built`
+   und kopiert es zusammen mit `mariadb:11` ins Profil `audit`. Das Skript
+   braucht Netz: Es lädt `node:24-alpine` und führt `pnpm install` aus. Rufe es
+   deshalb nie während eines Audit-Laufs auf. Rufe es erneut auf, wenn sich
+   `pnpm-lock.yaml` in resplan ändert. Siehe «Aufruf für resplan».
+
 3. Abnahmetest laufen lassen (einige Minuten):
 
    ```
@@ -198,11 +204,74 @@ sie auf die echte Datei, z. B. einen SSH-Schlüssel.
 
 Ein vollständiges Beispiel ist `tests/probe-rankscan.sh`.
 
+## Aufruf für resplan
+
+resplan ist Node 24, Next.js 15, MariaDB 11 und pnpm. Das Image
+`resplan-audit-built` enthält die Abhängigkeiten aus `pnpm-lock.yaml` unter
+`/node_modules`. Node und Vite suchen von `/src` aus in den Ordnern darüber und
+finden sie dort, auch bei ESM-`import`. `NODE_PATH` ist nicht gesetzt, es wirkt
+nur bei `require`. Die Quellkopie in `src/` enthält nie ein `node_modules`. Das
+Root-Dateisystem ist nur lesbar, also auch `/node_modules`.
+
+Das Image passt nur zum Lockfile, aus dem es gebaut wurde. `build-resplan.sh`
+nimmt das Lockfile von `HEAD` in resplan. Prüft der Audit einen anderen Commit
+mit anderem Lockfile, baue das Image vorher neu. Danach ist auch der
+Abnahmetest erneut nötig, weil sich die Image-ID ändert.
+
+1. Vorbereiten:
+
+   ```
+   security-audit/sandbox-run.sh prepare --agent-root "$ROOT" --target ~/projects/resplan
+   ```
+
+2. Ausführen und übernehmen:
+
+   ```
+   label="$(security-audit/sandbox-run.sh label --agent-root "$ROOT")"
+   python3 -I security-audit/promote.py --scratch "$ROOT/scratch" --artifacts "$ROOT/artifacts" \
+     --manifest "$ROOT/manifest.json" --container-label "$label" -- \
+     security-audit/sandbox-run.sh exec --agent-root "$ROOT" \
+       --image resplan-audit-built --mariadb mariadb:11 \
+       --env-file security-audit/env/resplan.env -- \
+       sh -c 'node /node_modules/tsx/dist/cli.mjs src/db/migrate.ts &&
+         node /node_modules/vitest/vitest.mjs run --reporter=junit \
+           --outputFile=/scratch/out/junit.xml src/...'
+   ```
+
+Hinweise:
+
+- Rufe `tsx` ohne `--env-file=.env` auf, also nicht über `pnpm db:migrate`.
+  Die Umgebung kommt allein aus `env/resplan.env`. `DATABASE_URL` zeigt dort
+  auf die Sandbox-MariaDB.
+- Migrationen und Tests gehören in denselben `exec`. Jeder `exec` startet eine
+  frische, leere MariaDB.
+- Rufe vitest und tsx über ihren Pfad unter `/node_modules` auf. `pnpm` und
+  `node_modules/.bin` gibt es in `/src` nicht.
+- vitest kann seinen Ergebnis-Cache unter `node_modules/.vite` nicht
+  schreiben. Das bricht den Lauf nicht ab.
+- `env/resplan.env` setzt keine Werte für MOCO, AWS, Mail, `CRON_SECRET` und
+  Google. Braucht eine Spur einen Wert, setzt ihn der Befehl als Dummy, z. B.
+  `env MOCO_API_KEY=dummy node …`.
+- Eigene Prüftests des Verifiers liegen in `scratch/input/`, zusammen mit
+  einer eigenen `vitest.config.mjs`: `test.root` auf `/scratch/input`, Alias
+  `@` auf `/src/src`. Der Befehl legt zuerst einen leeren Ordner
+  `/scratch/input/node_modules` an. Vite schreibt die gebündelte
+  Konfiguration sonst nach `/node_modules/.vite-temp` und scheitert am
+  Schreibschutz. Vorlage: Teil 2 von `tests/probe-resplan.sh`.
+- Mocks wie im Originaltest übernehmen. Ohne Mock von `@/lib/auth/edge` lädt
+  `@/middleware` das echte `next-auth` und scheitert an `next/server`.
+- Unsicher: `next build`, `next dev` und `next start` sind in der Sandbox
+  nicht geprüft. Sie brauchen ein beschreibbares `.next`, das wäre
+  `prepare --rw .next` nach einem leeren Ordner im Ziel. Der Probelauf deckt
+  nur tsx und vitest ab, auch mit einem Prüftest aus `scratch/input/`.
+
+Ein vollständiges Beispiel ist `tests/probe-resplan.sh`.
+
 ## Kontrollen und Limits
 
 | Kontrolle   | Umsetzung                                                                                                                                                                                              | Default | Option                     |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- | -------------------------- |
-| Netz        | Test-Container im Netz-Namespace von Postgres (`--network none`), sonst `--network none`; nur `lo`                                                                                                     | –       | –                          |
+| Netz        | Test-Container im Netz-Namespace von Postgres oder MariaDB (`--network none`), sonst `--network none`; nur `lo`                                                                                        | –       | –                          |
 | Umgebung    | `env -i` mit genau den Schlüsseln aus `--env-file`; `PATH`, `HOME`, `TMPDIR` Pflicht; `HOME`, `TMPDIR`, `XDG_*`, `COMPOSER_HOME`, `COMPOSER_CACHE_DIR` müssen auf `/scratch` zeigen, ohne `.` und `..` | –       | `--env-file`               |
 | Dateisystem | `--read-only`, `src/` als `/src:ro`, einziger Schreibort `/scratch`                                                                                                                                    | –       | `--rw`                     |
 | CPU         | `--cpus`                                                                                                                                                                                               | 2       | `--cpus`                   |
@@ -213,8 +282,10 @@ Ein vollständiges Beispiel ist `tests/probe-rankscan.sh`.
 | Laufzeit    | `timeout` im Container, Host-Wächter nach Limit + 15 s                                                                                                                                                 | 300 s   | `--timeout`                |
 | Härtung     | `--cap-drop ALL`, `no-new-privileges`, uid 65534, `--pull never`                                                                                                                                       | –       | –                          |
 
-Postgres und Redis laufen ebenfalls gehärtet, mit Wegwerf-Daten auf tmpfs und
-Dummy-Zugang `db`/`db`, Datenbank `db_test`.
+Postgres, Redis und MariaDB laufen ebenfalls gehärtet, mit Wegwerf-Daten auf
+tmpfs und Dummy-Zugang `db`/`db`, Datenbank `db_test`. Bei MariaDB ist auch
+das Root-Passwort `db`. `--mariadb` schliesst `--pg` aus. `--redis` braucht
+weiterhin `--pg`.
 
 `exec` gibt den Exit-Code des Befehls zurück. Eigene Codes: `90` Aufruffehler,
 `91` Vorbedingung verweigert (Nachweis, VM, Pfad, Denylist, Symlink in
@@ -241,12 +312,13 @@ Sandbox vorhanden. Zielcode führst du nur über diese Befehle aus:
 - Vorbereiten: <quality>/security-audit/sandbox-run.sh prepare
 - Ausführen und übernehmen: python3 -I <quality>/security-audit/promote.py ... -- <quality>/security-audit/sandbox-run.sh exec ...
 - Aufräumen: <quality>/security-audit/sandbox-run.sh cleanup
-Anleitung: <quality>/security-audit/README.md, Abschnitt «Ablauf pro Agent».
+Anleitung: <quality>/security-audit/README.md, Abschnitt «Ablauf pro Agent»,
+für resplan zusätzlich Abschnitt «Aufruf für resplan».
 
-Erfüllte Kontrollen (Abnahmetest grün am <Datum>, 20 Fälle):
-- Kein Netz nach aussen. Nur Loopback zu Postgres und Redis im selben Namespace.
+Erfüllte Kontrollen (Abnahmetest grün am <Datum>, 25 Fälle):
+- Kein Netz nach aussen. Nur Loopback zu Postgres und Redis oder zu MariaDB im selben Namespace.
 - Leere Umgebung aus einer Allowlist mit Dummy-Werten; HOME, TMPDIR und Caches auf scratch/.
-- Root-Dateisystem und Quelle nur lesbar; einziger Schreibort ist scratch/.
+- Root-Dateisystem und Quelle nur lesbar, auch /node_modules im Node-Image; einziger Schreibort ist scratch/.
 - Limits: 2 CPUs, 1 GB Speicher ohne Swap, 256 Prozesse, 64 MB pro Datei,
   512 MB Scratch, 300 s Laufzeit. Keine Capabilities, uid 65534, no-new-privileges.
 - Die Container-VM sieht nur ~/security-audit-skill/.
@@ -284,6 +356,7 @@ Regeln:
 | `prepare`, `cleanup` | hdiutil                | `bash security-audit/tests/test_prepare.sh`                              |
 | Abnahme              | Profil `audit`, Images | `bash security-audit/tests/acceptance.sh`                                |
 | Probelauf rankscan   | Abnahme-Nachweis       | `bash security-audit/tests/probe-rankscan.sh`                            |
+| Probelauf resplan    | Abnahme-Nachweis       | `bash security-audit/tests/probe-resplan.sh`                             |
 
 `ACCEPTANCE_CASES="fall1 fall2"` führt nur ausgewählte Fälle aus. Eine
 Teilauswahl schreibt keinen Nachweis.

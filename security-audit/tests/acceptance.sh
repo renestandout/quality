@@ -9,6 +9,8 @@ SANDBOX="$HERE/../sandbox-run.sh"
 
 IMAGE="ddev/ddev-webserver:v1.25.4-rankscan-built"
 PG_IMAGE="postgres:17-rankscan-built"
+NODE_IMAGE="resplan-audit-built"
+MARIADB_IMAGE="mariadb:11"
 ENV_FILE="$HERE/acceptance.env"
 ACC="$HOME/security-audit-skill/_acceptance"
 REPO="$ACC/repo"
@@ -323,6 +325,104 @@ rw_symlink_refused() {
   assert_eq 91 "$rc" "Exit bei Symlink scratch/rw"
 }
 
+# --- Node 24 und MariaDB (resplan) -------------------------------------------
+
+# Wie sx, aber mit dem Node-Image.
+sxn() { # agent-root [exec-optionen] -- befehl...
+  local root="$1" rc=0 out
+  shift
+  out="$("$SANDBOX" exec --agent-root "$root" --image "$NODE_IMAGE" --env-file "$ENV_FILE" \
+    --unverified-for-acceptance "$@" 2>&1)" || rc=$?
+  printf '%s\nEXIT=%s\n' "$out" "$rc"
+}
+
+mariadb_excludes_pg() {
+  local root out rc=0
+  root="$(agent mdbpg)"
+  out="$("$SANDBOX" exec --agent-root "$root" --image "$NODE_IMAGE" --env-file "$ENV_FILE" \
+    --unverified-for-acceptance --pg "$PG_IMAGE" --mariadb "$MARIADB_IMAGE" -- true 2>&1)" || rc=$?
+  finish_agent "$root"
+  assert_eq 90 "$rc" "Exit bei --pg und --mariadb"
+  assert_contains "$out" "AUFRUFFEHLER"
+  assert_contains "$out" "--mariadb schliesst --pg aus"
+}
+
+# Loopback zu MariaDB geht, alles andere nicht. Der Test-Container teilt den
+# Netz-Namespace von MariaDB, der nur lo kennt.
+mariadb_loopback_only() {
+  local root out
+  root="$(agent mdbnet)"
+  out="$(sxn "$root" --mariadb "$MARIADB_IMAGE" -- node -e '
+const mysql = require("/node_modules/mysql2/promise");
+(async () => {
+  const c = await mysql.createConnection({ host: "127.0.0.1", user: "db", password: "db", database: "db_test" });
+  const [rows] = await c.query("SELECT 1 + 1 AS n");
+  console.log("MARIADB-OK n=" + rows[0].n);
+  await c.end();
+  for (const url of ["https://example.com", "http://1.1.1.1"]) {
+    try { await fetch(url, { signal: AbortSignal.timeout(5000) }); console.log("EXTERN-ERREICHT " + url); }
+    catch (e) { console.log("extern-blockiert " + url); }
+  }
+  console.log("--- netdev\n" + require("fs").readFileSync("/proc/net/dev", "utf8").trimEnd());
+})().catch((e) => { console.log("FEHLER " + e.message); process.exit(1); });')"
+  finish_agent "$root"
+  assert_contains "$out" "MARIADB-OK n=2"
+  assert_contains "$out" "extern-blockiert https://example.com"
+  assert_contains "$out" "extern-blockiert http://1.1.1.1"
+  assert_not_contains "$out" "EXTERN-ERREICHT"
+  assert_eq "lo:" "$(printf '%s\n' "$out" | sed -n '/^--- netdev$/,/^EXIT=/p' | sed '1,3d;$d' | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//')" "Netzwerk-Schnittstellen"
+}
+
+# Der MariaDB-Container läuft gehärtet wie Postgres.
+mariadb_hardened() {
+  local root pid label spec i=0
+  root="$(agent mdbhard)"
+  label="$("$SANDBOX" label --agent-root "$root" | cut -d= -f2)"
+  "$SANDBOX" exec --agent-root "$root" --image "$NODE_IMAGE" --env-file "$ENV_FILE" \
+    --unverified-for-acceptance --mariadb "$MARIADB_IMAGE" --timeout 60 -- sleep 40 >/dev/null 2>&1 &
+  pid=$!
+  until "${DOCKER[@]}" ps -q --filter "name=sa-$label-test" | grep -q .; do
+    i=$((i + 1))
+    [ "$i" -le 60 ] || { kill -TERM "$pid"; wait "$pid"; fail "Test-Container startete nicht"; }
+    sleep 1
+  done
+  spec="$("${DOCKER[@]}" inspect --format '{{.Config.User}} {{.HostConfig.NetworkMode}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}} {{.HostConfig.SecurityOpt}} {{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.PidsLimit}} {{.HostConfig.NanoCpus}}' "sa-$label-mariadb")"
+  kill -TERM "$pid"
+  wait "$pid" 2>/dev/null || true
+  finish_agent "$root"
+  assert_eq "mysql none true [ALL] [no-new-privileges] 536870912 536870912 128 1000000000" "$spec" "MariaDB-Container"
+}
+
+# Die Abhängigkeiten im Image sind nicht beschreibbar. Einziger Schreibort ist /scratch.
+node_modules_readonly() {
+  local root out n
+  root="$(agent nmro)"
+  out="$(sxn "$root" -- sh -c 'touch /node_modules/x; touch /node_modules/vitest/x; touch /src/x; touch /x
+    touch /scratch/out/x && echo SCRATCH-OK')"
+  finish_agent "$root"
+  n="$(printf '%s\n' "$out" | grep -c 'Read-only file system')"
+  assert_eq 4 "$n" "Anzahl Read-only-Meldungen"
+  assert_contains "$out" "SCRATCH-OK"
+}
+
+# Limits und Härtung greifen auch im Node-Image.
+node_limits() {
+  local root out
+  root="$(agent nlim)"
+  out="$(sxn "$root" --memory 256m --pids 64 -- sh -c 'echo "uid=$(id -u)"; echo "max=$(cat /sys/fs/cgroup/memory.max)"
+    echo "swap=$(cat /sys/fs/cgroup/memory.swap.max)"; echo "pids=$(cat /sys/fs/cgroup/pids.max)"
+    grep -E "^(CapEff|NoNewPrivs)" /proc/self/status
+    node -e "const a = []; for (;;) a.push(Buffer.alloc(16 * 1024 * 1024, 1));" 2>/dev/null; echo "node-rc=$?"')"
+  finish_agent "$root"
+  assert_contains "$out" "uid=65534"
+  assert_contains "$out" "max=268435456"
+  assert_contains "$out" "swap=0"
+  assert_contains "$out" "pids=64"
+  assert_contains "$out" "$(printf 'CapEff:\t0000000000000000')"
+  assert_contains "$out" "$(printf 'NoNewPrivs:\t1')"
+  assert_not_contains "$out" "node-rc=0"
+}
+
 cleanup_after_sigterm() {
   local root pid
   root="$(agent term)"
@@ -347,7 +447,8 @@ ALL_CASES="guard_refuses_without_proof guard_detects_fingerprint_mismatch networ
   network_loopback_to_pg network_loopback_to_redis env_only_allowlist env_paths_must_point_to_scratch
   paths_with_space_and_umlaut readonly_src_and_root scratch_visible_in_sequence hardening
   vm_sees_only_audit_root pids_limit memory_oom fsize_limit disk_limit timeout_kills promote_end_to_end
-  rw_symlink_refused cleanup_after_sigterm"
+  rw_symlink_refused cleanup_after_sigterm mariadb_excludes_pg mariadb_loopback_only mariadb_hardened
+  node_modules_readonly node_limits"
 PROOF="$HOME/security-audit-skill/.sandbox-acceptance.json"
 
 # Schreibt den Nachweis nur nach einem vollständigen, grünen Lauf.

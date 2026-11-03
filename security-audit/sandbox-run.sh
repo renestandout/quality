@@ -3,7 +3,7 @@
 #
 #   sandbox-run.sh prepare --agent-root DIR --target REPO [--scratch-size 512m] [--rw PATH]...
 #                          [--include PATH]...
-#   sandbox-run.sh exec --agent-root DIR --image IMG --env-file FILE [--pg IMG] [--redis IMG]
+#   sandbox-run.sh exec --agent-root DIR --image IMG --env-file FILE [--pg IMG] [--redis IMG] [--mariadb IMG]
 #                       [--cpus N] [--memory SIZE] [--pids N] [--fsize SIZE] [--timeout SEK]
 #                       [--rw PATH]... [--workdir DIR] [--unverified-for-acceptance] -- BEFEHL...
 #   sandbox-run.sh cleanup --agent-root DIR
@@ -291,7 +291,7 @@ remove_containers() { # label
 }
 
 cmd_exec() {
-  local agent_root="" image="" env_file="" pg="" redis="" cpus=2 memory=1g pids=256 fsize=64m timeout=300
+  local agent_root="" image="" env_file="" pg="" redis="" mariadb="" cpus=2 memory=1g pids=256 fsize=64m timeout=300
   local workdir=/src unverified=0 rw=() root label fp mismatch line key value envs=() keys=" " p
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -300,6 +300,7 @@ cmd_exec() {
       --env-file) env_file="${2:-}"; shift 2 ;;
       --pg) pg="${2:-}"; shift 2 ;;
       --redis) redis="${2:-}"; shift 2 ;;
+      --mariadb) mariadb="${2:-}"; shift 2 ;;
       --cpus) cpus="${2:-}"; shift 2 ;;
       --memory) memory="${2:-}"; shift 2 ;;
       --pids) pids="${2:-}"; shift 2 ;;
@@ -315,6 +316,7 @@ cmd_exec() {
   [ $# -gt 0 ] || die 90 "exec: Befehl nach -- fehlt"
   [ -n "$agent_root" ] && [ -n "$image" ] && [ -n "$env_file" ] || die 90 "exec braucht --agent-root, --image und --env-file"
   [ -z "$redis" ] || [ -n "$pg" ] || die 90 "--redis braucht --pg, Redis teilt dessen Netz-Namespace"
+  [ -z "$mariadb" ] || [ -z "$pg" ] || die 90 "--mariadb schliesst --pg aus, beide wären der Netz-Namespace des Laufs"
   [[ "$timeout" =~ ^[0-9]+$ && "$pids" =~ ^[0-9]+$ ]] || die 90 "--timeout und --pids als ganze Zahl angeben"
   [[ "$cpus" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die 90 "--cpus als Zahl angeben: $cpus"
   memory="$(to_bytes "$memory")"
@@ -389,6 +391,25 @@ raise SystemExit(0 if mounts == [sys.argv[2]] else 1)
       sleep 1
     done
     net="container:sa-$label-pg"
+  fi
+  # MariaDB für Node-Ziele wie resplan. Gleiche Härtung und Limits wie Postgres.
+  # Die Sandbox wartet über TCP: Während der Initialisierung läuft MariaDB ohne
+  # Netz. Ein Ping auf 127.0.0.1 gelingt erst dem fertigen Server.
+  if [ -n "$mariadb" ]; then
+    docker --context "$DOCKER_CONTEXT" run -d --name "sa-$label-mariadb" "${harden[@]}" --network none \
+      --user mysql --cpus 1 --memory 512m --memory-swap 512m --pids-limit 128 \
+      --tmpfs /var/lib/mysql:rw,size=256m,uid=999,gid=999,mode=0700 \
+      --tmpfs /run/mysqld:rw,size=1m,uid=999,gid=999 \
+      --tmpfs /tmp:rw,size=16m,uid=999,gid=999 \
+      -e MARIADB_ROOT_PASSWORD=db -e MARIADB_USER=db -e MARIADB_PASSWORD=db -e MARIADB_DATABASE=db_test \
+      "$mariadb" >/dev/null
+    local j=0
+    until docker --context "$DOCKER_CONTEXT" exec "sa-$label-mariadb" mariadb-admin ping -s -h 127.0.0.1 -u db -pdb >/dev/null 2>&1; do
+      j=$((j + 1))
+      [ "$j" -le 60 ] || die 91 "MariaDB wurde in 60 s nicht bereit"
+      sleep 1
+    done
+    net="container:sa-$label-mariadb"
   fi
   if [ -n "$redis" ]; then
     docker --context "$DOCKER_CONTEXT" run -d --name "sa-$label-redis" "${harden[@]}" --network "$net" \
