@@ -161,17 +161,21 @@ Workflow als vorhanden voraussetzt.
 
 ## Runner registrieren
 
-`renestandout` ist ein persönlicher Account. Org-Runner gibt es dort nicht —
-jede Runner-Instanz gehört zu genau einem Repository. Verteilung:
+Die Runner hängen am Repository, nicht an einer Organisation. Jede
+Runner-Instanz gehört zu genau einem Repository. `renestandout` ist ein
+persönlicher Account ohne Org-Runner. Die drei RankScan-Repos liegen seit dem
+06.11.2026 bei der Organisation `klarplan`. Ihre Repo-Runner liefen nach dem
+Transfer ohne neue Registrierung weiter. Org-Runner bei `klarplan` sind nicht
+eingerichtet. Verteilung:
 
-| Repository                  | Instanzen | Grund                                                    |
-| --------------------------- | --------- | -------------------------------------------------------- |
-| renestandout/rankscan       | 2         | `tests` belegt eine Instanz rund 10 Minuten, siehe unten |
-| renestandout/adboard        | 1         | zwei kurze Jobs                                          |
-| renestandout/rankscanpage   | 1         | zwei kurze Jobs                                          |
-| renestandout/rankscanmautic | 1         | shellcheck + gitleaks, Sekunden                          |
-| renestandout/calcup         | 1         | Grund nicht dokumentiert                                 |
-| renestandout/resplan        | 1         | Grund nicht dokumentiert                                 |
+| Repository              | Instanzen | Grund                                                    |
+| ----------------------- | --------- | -------------------------------------------------------- |
+| klarplan/rankscan       | 2         | `tests` belegt eine Instanz rund 10 Minuten, siehe unten |
+| renestandout/adboard    | 1         | zwei kurze Jobs                                          |
+| klarplan/rankscanpage   | 1         | zwei kurze Jobs                                          |
+| klarplan/rankscanmautic | 1         | shellcheck + gitleaks, Sekunden                          |
+| renestandout/calcup     | 1         | Grund nicht dokumentiert                                 |
+| renestandout/resplan    | 1         | Grund nicht dokumentiert                                 |
 
 **Eine Instanz je Repo, ausser bei rankscan.** Der naheliegende Gedanke ist,
 mehrere Runner zu registrieren, damit die Jobs eines Laufs parallel starten.
@@ -493,7 +497,8 @@ ssh root@<vm> 'while ps -eo cmd | grep -q "[R]unner\.Worker"; do echo "Job aktiv
 ```
 
 Prüfe danach `systemctl is-active docker`, die 7 Runner-Dienste und den
-Status bei GitHub (`gh api repos/renestandout/<repo>/actions/runners`). Nur
+Status bei GitHub (`gh api repos/<owner>/<repo>/actions/runners`). `<owner>`
+ist `klarplan` für die RankScan-Repos, sonst `renestandout`. Nur
 rankscan nutzt einen `services:`-Container (`postgres:17`). Ein grüner
 rankscan-Lauf auf der VM bestätigt deshalb das Update. Nimm dafür einen
 Push auf `main`, keinen Bot-PR. Bot-PRs laufen auf `ubuntu-latest` und
