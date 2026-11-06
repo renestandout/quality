@@ -199,6 +199,17 @@ einem Detail, ist aber der Unterschied zwischen „`composer audit` ist grün" u
 „das Frontend hatte vier offene Verwundbarkeiten" — genau so ist es bei adboard
 passiert, bevor es dieses Werkzeug gab.
 
+Eine Ausnahme sind npm- und Yarn-Workspaces. Nennt ein `package.json` das Feld
+`workspaces`, ist jeder Workspace eine Komponente und die Wurzel keine. Muster
+mit `!` schliessen aus. Das Lockfile liegt nur in der Workspace-Wurzel, und
+`npm audit` misst dort immer den ganzen Workspace. Der Audit misst die
+Abhängigkeiten deshalb einmal je Wurzel, unter «Repository». Für eine Wurzel
+mit `yarn.lock` steht dort nur ein Hinweis: das Format von `yarn audit` liest
+der Audit nicht. Anlass war mcp-servers: als Komponente `.` gelesen, meldete die
+Typprüfung exit 1, weil die Wurzel keine `tsconfig.json` hat. Gemessen war damit
+kein einziger Server. pnpm-Workspaces (`pnpm-workspace.yaml`) erkennt der Audit
+noch nicht.
+
 Welches Werkzeug misst, entscheidet das Lockfile: `composer audit`,
 `npm audit` oder `pnpm audit`. Der Bericht nennt es dazu, weil die drei
 verschiedene Abhängigkeitsbäume sehen. yarn fehlt bewusst — es schreibt ein
