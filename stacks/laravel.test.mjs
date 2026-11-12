@@ -371,3 +371,42 @@ test('tests: ein eigener Testbefehl läuft auch ohne vendor unverändert', (t) =
   const step = runnable(laravel.test?.(ctx))
   assert.equal(step.cmd, 'php')
 })
+
+test('phpstan: verweist der gemeinsame Cache auf einen gelöschten Worktree, heilt das Gate ihn', async (t) => {
+  // adboard, 12.11.2026: Das Board hatte einen Worktree gelöscht. Der Cache in
+  // $TMPDIR/phpstan verwies noch auf dessen phpstan.phar, und PHPStan brach
+  // in jedem anderen Checkout mit «… is not a file» ab.
+  const { root, dir } = project({ ddev: false })
+  const temp = mkdtempSync(join(tmpdir(), 'quality-tmpdir-'))
+  const saved = process.env.TMPDIR
+  t.after(() => {
+    if (saved === undefined) delete process.env.TMPDIR
+    else process.env.TMPDIR = saved
+    rmSync(root, { recursive: true, force: true })
+    rmSync(temp, { recursive: true, force: true })
+  })
+  mkdirSync(join(temp, 'phpstan', 'cache', 'PHPStan'), { recursive: true })
+  const fake = join(dir, 'vendor', 'bin', 'phpstan')
+  writeFileSync(
+    fake,
+    [
+      '#!/bin/sh',
+      'if [ -d "$TMPDIR/phpstan/cache/PHPStan" ]; then',
+      "  echo '     Internal error:'",
+      "  echo '     \"phar:///nirgends/worktree/vendor/phpstan/phpstan/phpstan.phar/x.stub  '",
+      "  echo '     \" is not a file while analysing file /p/A.php  '",
+      '  exit 1',
+      'fi',
+      'echo "[OK] No errors"',
+    ].join('\n') + '\n',
+  )
+  chmodSync(fake, 0o755)
+  process.env.TMPDIR = temp
+
+  const step = runnable(laravel.types?.(context({ root, dir }, { files: null })))
+  const result = await runStep(step, { quiet: true })
+
+  assert.equal(result.code, 0)
+  assert.match(result.output, /No errors/)
+  assert.match(result.output, /Cache/)
+})

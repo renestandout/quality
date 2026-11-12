@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { STALE_CACHE_NOTE, healStaleCache } from '../lib/phpstan-cache.mjs'
 import {
   failingCommand,
   findBinary,
@@ -87,10 +88,17 @@ function phpstanStep(ctx, tool) {
   // Bei einem Datei-Lauf (Hook) nur die geänderten Dateien prüfen. PHPStan
   // analysiert dann zwar mit weniger Kontext, ist aber in Millisekunden fertig.
   if (ctx.files?.length) args.push(...ctx.files)
+  const command = phpCommand(tool, args, ctx.dir)
   return {
     name: `phpstan level ${ctx.component.phpstanLevel} (${ctx.component.path})`,
-    ...phpCommand(tool, args, ctx.dir),
+    ...command,
     cwd: ctx.dir,
+    // Im ddev-Container liegt der Cache im Container; dort hilft das Löschen
+    // auf dem Host nicht.
+    recover:
+      command.cmd === 'ddev'
+        ? undefined
+        : (output) => (healStaleCache(output) ? STALE_CACHE_NOTE : null),
   }
 }
 
