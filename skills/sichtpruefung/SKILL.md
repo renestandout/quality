@@ -30,6 +30,7 @@ node <basisordner>/sichtpruefung.mjs <url|datei> \
 - `--breiten`: Breiten in px, mit Komma getrennt. Standard: `1100,320`.
 - `--schemata`: `hell`, `dunkel` oder beide. Standard: beide.
 - `--selektor`: CSS-Selektor, dessen Elemente auf Überlauf geprüft werden. Wiederholbar.
+- `--frist`: Sekunden, die das Skript auf jede Antwort von Chrome wartet. Standard: `30`.
 - `--aus`: Ausgabeordner. Ohne Angabe legt das Skript `$TMPDIR/sichtpruefung-<zeit>` an.
 - `SICHTPRUEFUNG_CHROME`: setzt einen anderen Chrome-Pfad.
 
@@ -65,7 +66,7 @@ Ein Element steht nur in `elemente`, wenn `scrollWidth > clientWidth` gilt.
 
 - `0`: keine Variante überläuft.
 - `1`: mindestens eine Variante überläuft. Ein Gate kann darauf abbrechen.
-- `2`: Fehler, etwa Chrome fehlt, Seite lädt nicht oder Selektor ist ungültig. Die Meldung steht auf stderr.
+- `2`: Fehler, etwa Chrome fehlt, Seite lädt nicht, Frist abgelaufen, Chrome abgestürzt, Abbruch per Ctrl+C oder SIGTERM, Selektor ungültig. Die Meldung steht auf stderr. Auch dann beendet das Skript Chrome und löscht das Profil.
 
 ## PNGs zeigen
 

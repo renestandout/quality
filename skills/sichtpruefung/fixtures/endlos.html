@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <title>endlos</title>
+  </head>
+  <body>
+    <p>Nach dem Laden blockiert ein Skript den Renderer.</p>
+    <script>
+      addEventListener('load', () =>
+        setTimeout(() => {
+          for (;;) {}
+        }, 0),
+      )
+    </script>
+  </body>
+</html>

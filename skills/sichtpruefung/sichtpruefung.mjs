@@ -2,7 +2,7 @@
 // Sichtprüfung: misst eine Seite headless auf horizontalen Überlauf und speichert PNGs.
 // Chrome läuft mit Wegwerf-Profil. Das persönliche Profil bleibt unberührt.
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -12,7 +12,7 @@ const SCHEMATA = /** @type {const} */ (['hell', 'dunkel'])
 
 /**
  * @typedef {'hell' | 'dunkel'} Schema
- * @typedef {{ziel: string, breiten: number[], schemata: Schema[], selektoren: string[], aus: string | null}} Optionen
+ * @typedef {{ziel: string, breiten: number[], schemata: Schema[], selektoren: string[], aus: string | null, frist: number}} Optionen
  * @typedef {{selektor: string, index: number, scrollWidth: number, clientWidth: number}} Element
  * @typedef {{breite: number, schema: Schema, seiteUeberlaeuft: boolean, seite: {scrollWidth: number, clientWidth: number}, elemente: Element[], png: string}} Variante
  * @typedef {{ziel: string, erstellt: string, varianten: Variante[]}} Befund
@@ -26,7 +26,6 @@ const CHROME_KANDIDATEN = [
   '/usr/bin/chromium-browser',
 ]
 const START_FRIST_MS = 10_000
-const SEITEN_FRIST_MS = 30_000
 const HOEHE = 800
 
 /**
@@ -43,6 +42,7 @@ export function parseArgs(argv, cwd) {
     schemata: ['hell', 'dunkel'],
     selektoren: [],
     aus: null,
+    frist: 30,
   }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] ?? ''
@@ -66,6 +66,9 @@ export function parseArgs(argv, cwd) {
       opt.schemata = /** @type {Schema[]} */ (liste)
     } else if (arg === '--selektor') {
       opt.selektoren.push(wert)
+    } else if (arg === '--frist') {
+      opt.frist = Number(wert)
+      if (!(opt.frist > 0)) throw new Error(`Ungültige Frist: ${wert}`)
     } else if (arg === '--aus') {
       opt.aus = path.resolve(cwd, wert)
     } else {
@@ -153,9 +156,12 @@ async function beendeChrome(prozess) {
 
 /**
  * Minimaler CDP-Client über den eingebauten WebSocket.
+ * Jeder Aufruf und jedes Ereignis hat eine Frist.
+ * Schliesst sich die Verbindung, scheitern alle offenen Aufrufe.
  * @param {string} url
+ * @param {number} fristMs
  */
-async function verbinde(url) {
+async function verbinde(url, fristMs) {
   const ws = new WebSocket(url)
   await new Promise((ok, nein) => {
     ws.addEventListener('open', ok, { once: true })
@@ -164,10 +170,44 @@ async function verbinde(url) {
     })
   })
   let naechste = 0
-  /** @type {Map<number, {ok: (v: any) => void, nein: (e: Error) => void}>} */
+  /** @typedef {{ok: (v: any) => void, nein: (e: Error) => void}} Auftrag */
+  /** @type {Map<number, Auftrag>} */
   const offen = new Map()
-  /** @type {Map<string, ((p: any) => void)[]>} */
+  /** @type {Map<string, Set<Auftrag>>} */
   const warter = new Map()
+  /** @type {Error | null} */
+  let abbruch = null
+
+  /**
+   * Gibt einem Auftrag eine Frist. Der Timer hält den Prozess nicht am Leben.
+   * @param {string} was
+   * @param {(auftrag: Auftrag) => void} eintragen
+   * @param {(auftrag: Auftrag) => void} austragen
+   * @returns {Promise<any>}
+   */
+  function mitFrist(was, eintragen, austragen) {
+    return new Promise((ok, nein) => {
+      if (abbruch) return nein(abbruch)
+      /** @type {Auftrag} */
+      const auftrag = {
+        ok: (v) => {
+          clearTimeout(t)
+          ok(v)
+        },
+        nein: (e) => {
+          clearTimeout(t)
+          nein(e)
+        },
+      }
+      const t = setTimeout(() => {
+        austragen(auftrag)
+        nein(new Error(`${was}: keine Antwort innert ${fristMs / 1000} s`))
+      }, fristMs)
+      t.unref()
+      eintragen(auftrag)
+    })
+  }
+
   ws.addEventListener('message', (ereignis) => {
     const nachricht = JSON.parse(String(ereignis.data))
     if (nachricht.id !== undefined) {
@@ -177,11 +217,20 @@ async function verbinde(url) {
         auftrag?.nein(new Error(`${nachricht.error.message} (${nachricht.error.code})`))
       else auftrag?.ok(nachricht.result)
     } else {
-      const liste = warter.get(nachricht.method) ?? []
+      const liste = warter.get(nachricht.method)
       warter.delete(nachricht.method)
-      for (const f of liste) f(nachricht.params)
+      for (const auftrag of liste ?? []) auftrag.ok(nachricht.params)
     }
   })
+  ws.addEventListener('close', () => {
+    const fehler = new Error('Verbindung zu Chrome abgebrochen')
+    abbruch = fehler
+    for (const auftrag of offen.values()) auftrag.nein(fehler)
+    for (const liste of warter.values()) for (const auftrag of liste) auftrag.nein(fehler)
+    offen.clear()
+    warter.clear()
+  })
+
   return {
     /**
      * @param {string} methode
@@ -190,30 +239,29 @@ async function verbinde(url) {
      */
     sende(methode, params = {}) {
       const id = ++naechste
-      return new Promise((ok, nein) => {
-        offen.set(id, { ok, nein })
-        ws.send(JSON.stringify({ id, method: methode, params }))
-      })
+      return mitFrist(
+        methode,
+        (auftrag) => {
+          offen.set(id, auftrag)
+          ws.send(JSON.stringify({ id, method: methode, params }))
+        },
+        () => offen.delete(id),
+      )
     },
     /**
      * @param {string} methode
-     * @param {number} frist
      * @returns {Promise<any>}
      */
-    ereignis(methode, frist) {
-      return new Promise((ok, nein) => {
-        const t = setTimeout(
-          () => nein(new Error(`${methode} kam nicht innert ${frist / 1000} s`)),
-          frist,
-        )
-        warter.set(methode, [
-          ...(warter.get(methode) ?? []),
-          (p) => {
-            clearTimeout(t)
-            ok(p)
-          },
-        ])
-      })
+    ereignis(methode) {
+      return mitFrist(
+        methode,
+        (auftrag) => {
+          const liste = warter.get(methode) ?? new Set()
+          liste.add(auftrag)
+          warter.set(methode, liste)
+        },
+        (auftrag) => warter.get(methode)?.delete(auftrag),
+      )
     },
     schliesse() {
       ws.close()
@@ -241,6 +289,12 @@ function messAusdruck(selektoren) {
 }
 
 /**
+ * Aufräumer laufender Prüfungen, für den Abbruch durch ein Signal.
+ * @type {Set<() => void>}
+ */
+const aufraeumer = new Set()
+
+/**
  * Prüft das Ziel je Breite und Schema, speichert PNGs und befund.json.
  * @param {Optionen & {aus: string}} opt
  * @returns {Promise<Befund>}
@@ -252,15 +306,22 @@ export async function pruefe(opt) {
   let prozess = null
   /** @type {Awaited<ReturnType<typeof verbinde>> | null} */
   let cdp = null
+  const fristMs = opt.frist * 1000
+  const notfall = () => {
+    prozess?.kill('SIGKILL')
+    rmSync(profil, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+  aufraeumer.add(notfall)
   try {
     const chrome = await starteChrome(profil)
     prozess = chrome.prozess
     const antwort = await fetch(`http://127.0.0.1:${chrome.port}/json/new?about:blank`, {
       method: 'PUT',
+      signal: AbortSignal.timeout(fristMs),
     })
     if (!antwort.ok) throw new Error(`DevTools: neuer Tab scheitert (${antwort.status})`)
     const tab = /** @type {{webSocketDebuggerUrl: string}} */ (await antwort.json())
-    cdp = await verbinde(tab.webSocketDebuggerUrl)
+    cdp = await verbinde(tab.webSocketDebuggerUrl, fristMs)
     await cdp.sende('Page.enable')
 
     /** @type {Variante[]} */
@@ -278,12 +339,11 @@ export async function pruefe(opt) {
             { name: 'prefers-color-scheme', value: schema === 'dunkel' ? 'dark' : 'light' },
           ],
         })
-        const geladen = cdp.ereignis('Page.loadEventFired', SEITEN_FRIST_MS)
+        const geladen = cdp.ereignis('Page.loadEventFired')
+        // Scheitert die Navigation, darf das Warten auf load nicht unbehandelt verwerfen.
+        geladen.catch(() => {})
         const nav = await cdp.sende('Page.navigate', { url: opt.ziel })
-        if (nav.errorText) {
-          geladen.catch(() => {})
-          throw new Error(`Seite lädt nicht: ${opt.ziel} (${nav.errorText})`)
-        }
+        if (nav.errorText) throw new Error(`Seite lädt nicht: ${opt.ziel} (${nav.errorText})`)
         await geladen
         await cdp.sende('Runtime.evaluate', {
           expression: 'document.fonts.ready.then(() => true)',
@@ -329,6 +389,7 @@ export async function pruefe(opt) {
     await writeFile(path.join(opt.aus, 'befund.json'), JSON.stringify(befund, null, 2) + '\n')
     return befund
   } finally {
+    aufraeumer.delete(notfall)
     cdp?.schliesse()
     if (prozess) await beendeChrome(prozess)
     await rm(profil, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
@@ -357,5 +418,12 @@ export async function main(argv, einstellung = {}) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  for (const signal of /** @type {const} */ (['SIGINT', 'SIGTERM'])) {
+    process.once(signal, () => {
+      for (const f of aufraeumer) f()
+      process.stderr.write(`sichtpruefung: abgebrochen (${signal})\n`)
+      process.exit(2)
+    })
+  }
   process.exitCode = await main(process.argv.slice(2))
 }

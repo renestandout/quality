@@ -1,8 +1,11 @@
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { execFileSync, spawn } from 'node:child_process'
+import { createServer } from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { parseArgs, hatUeberlauf, pruefe, main } from './sichtpruefung.mjs'
 
 test('parseArgs löst eine lokale Datei zur file-URL auf und setzt Standardwerte', () => {
@@ -12,12 +15,15 @@ test('parseArgs löst eine lokale Datei zur file-URL auf und setzt Standardwerte
   assert.deepEqual(opt.schemata, ['hell', 'dunkel'])
   assert.deepEqual(opt.selektoren, [])
   assert.equal(opt.aus, null)
+  assert.equal(opt.frist, 30)
 })
 
 test('parseArgs übernimmt URL, Breiten, Schemata, Selektoren und Ausgabeordner', () => {
   const opt = parseArgs(
     [
       'https://a.ch',
+      '--frist',
+      '5',
       '--breiten',
       '800',
       '--schemata',
@@ -36,6 +42,7 @@ test('parseArgs übernimmt URL, Breiten, Schemata, Selektoren und Ausgabeordner'
   assert.deepEqual(opt.schemata, ['dunkel'])
   assert.deepEqual(opt.selektoren, ['.a', '.b'])
   assert.equal(opt.aus, '/x/o')
+  assert.equal(opt.frist, 5)
 })
 
 test('parseArgs wirft bei unbekanntem Schema, Breite 0 und fehlendem Ziel', () => {
@@ -141,4 +148,118 @@ test('main: fehlendes Chrome ergibt Exit 2 und lässt kein Profil zurück', asyn
     else process.env['SICHTPRUEFUNG_CHROME'] = alt
   }
   assert.deepEqual(await profile(), vorher)
+})
+
+/** Zählt laufende Chrome-Prozesse mit Wegwerf-Profil. */
+function chromeProzesse() {
+  try {
+    return execFileSync('pgrep', ['-f', 'sichtpruefung-profil-'], { encoding: 'utf8' })
+      .trim()
+      .split('\n').length
+  } catch {
+    return 0
+  }
+}
+
+/** Startet einen Server, der Verbindungen annimmt und nie antwortet. */
+async function stummerServer() {
+  const server = createServer(() => {})
+  await new Promise((r) => server.listen(0, '127.0.0.1', () => r(undefined)))
+  const adresse = /** @type {import('node:net').AddressInfo} */ (server.address())
+  return {
+    url: `http://127.0.0.1:${adresse.port}/`,
+    schliesse: () => {
+      server.closeAllConnections()
+      server.close()
+    },
+  }
+}
+
+/**
+ * Prüft Exit 2, Dauer unter der Grenze und dass nichts zurückbleibt.
+ * @param {() => Promise<number>} lauf
+ * @param {number} grenzeMs
+ */
+async function erwarteSauberenAbbruch(lauf, grenzeMs) {
+  const vorher = await profile()
+  const prozesseVorher = chromeProzesse()
+  const start = Date.now()
+  assert.equal(await lauf(), 2)
+  assert.ok(Date.now() - start < grenzeMs, `dauerte ${Date.now() - start} ms`)
+  assert.deepEqual(await profile(), vorher)
+  assert.equal(chromeProzesse(), prozesseVorher)
+}
+
+test('main: unbekanntes Schema ergibt Exit 2', async () => {
+  assert.equal(await main([fixture('ok.html'), '--schemata', 'grau'], { quiet: true }), 2)
+})
+
+test('pruefe: Selektor ohne Treffer meldet keine Elemente', async () => {
+  const aus = await ordner('sichtpruefung-test-')
+  const befund = await pruefe({
+    ...parseArgs([fixture('ok.html'), '--breiten', '320', '--schemata', 'hell'], '/'),
+    selektoren: ['.gibtesnicht'],
+    aus,
+  })
+  assert.deepEqual(befund.varianten[0]?.elemente, [])
+})
+
+test('main: Datei fehlt ergibt Exit 2 ohne Wartezeit', async () => {
+  const aus = await ordner('sichtpruefung-test-')
+  await erwarteSauberenAbbruch(
+    () => main([fixture('fehlt.html'), '--aus', aus], { quiet: true }),
+    8000,
+  )
+})
+
+test('main: Server antwortet nie ergibt Exit 2 nach der Frist und räumt auf', async () => {
+  const server = await stummerServer()
+  const aus = await ordner('sichtpruefung-test-')
+  try {
+    await erwarteSauberenAbbruch(
+      () => main([server.url, '--frist', '2', '--aus', aus], { quiet: true }),
+      10000,
+    )
+  } finally {
+    server.schliesse()
+  }
+})
+
+test('main: blockierte Seite ergibt Exit 2 nach der Frist und räumt auf', async () => {
+  const aus = await ordner('sichtpruefung-test-')
+  await erwarteSauberenAbbruch(
+    () => main([fixture('endlos.html'), '--frist', '2', '--aus', aus], { quiet: true }),
+    10000,
+  )
+})
+
+test('main: Absturz von Chrome ergibt Exit 2 und räumt auf', async () => {
+  const aus = await ordner('sichtpruefung-test-')
+  await erwarteSauberenAbbruch(
+    () =>
+      main(['chrome://inducebrowsercrashforrealz', '--frist', '5', '--aus', aus], { quiet: true }),
+    15000,
+  )
+})
+
+test('CLI: SIGTERM beendet Chrome, löscht das Profil und endet mit Exit 2', async () => {
+  const server = await stummerServer()
+  const aus = await ordner('sichtpruefung-test-')
+  const vorher = await profile()
+  try {
+    const skript = fileURLToPath(new URL('./sichtpruefung.mjs', import.meta.url))
+    const kind = spawn(process.execPath, [skript, server.url, '--aus', aus], { stdio: 'ignore' })
+    const ende = Date.now() + 10000
+    while ((await profile()).length === vorher.length && Date.now() < ende)
+      await new Promise((r) => setTimeout(r, 50))
+    await new Promise((r) => setTimeout(r, 1000))
+    kind.kill('SIGTERM')
+    const code = await new Promise((r) => kind.once('exit', (c) => r(c)))
+    assert.equal(code, 2)
+    await new Promise((r) => setTimeout(r, 500))
+    assert.deepEqual(await profile(), vorher)
+    assert.equal(chromeProzesse(), 0)
+  } finally {
+    server.schliesse()
+  }
 })
