@@ -2,7 +2,7 @@
 // Sichtprüfung: misst eine Seite headless auf horizontalen Überlauf und speichert PNGs.
 // Chrome läuft mit Wegwerf-Profil. Das persönliche Profil bleibt unberührt.
 import { spawn } from 'node:child_process'
-import { existsSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -26,6 +26,8 @@ const CHROME_KANDIDATEN = [
   '/usr/bin/chromium-browser',
 ]
 const START_FRIST_MS = 10_000
+// So lange wartet das Aufräumen, bis alle Prozesse der Chrome-Gruppe weg sind.
+const GRUPPEN_FRIST_MS = 3000
 const HOEHE = 800
 
 /**
@@ -121,7 +123,9 @@ async function starteChrome(profil) {
       '--disable-extensions',
       'about:blank',
     ],
-    { stdio: 'ignore' },
+    // Eigene Prozessgruppe: Unter Linux überleben Zygote und Netzwerkdienst
+    // den Hauptprozess und schreiben weiter ins Profil. Nur die Gruppe trifft alle.
+    { stdio: 'ignore', detached: true },
   )
   /** @type {Error | null} */
   let fehler = null
@@ -137,21 +141,56 @@ async function starteChrome(profil) {
     }
     await warte(50)
   }
-  prozess.kill('SIGKILL')
+  await toeteChrome(prozess)
   throw new Error(`Chrome meldete nach ${START_FRIST_MS / 1000} s keinen DevTools-Port`)
 }
 
 /**
- * Beendet Chrome und wartet auf das Ende des Prozesses.
+ * Schickt der Prozessgruppe von Chrome ein Signal.
+ * Gibt false zurück, wenn die Gruppe nicht mehr existiert.
+ * @param {import('node:child_process').ChildProcess} prozess
+ * @param {NodeJS.Signals | 0} signal
+ */
+function signalAnGruppe(prozess, signal) {
+  if (!prozess.pid) return false
+  try {
+    process.kill(-prozess.pid, signal)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Tötet die ganze Prozessgruppe von Chrome und wartet, bis sie weg ist.
+ * Erst danach schreibt kein Chrome-Prozess mehr ins Profil.
+ * @param {import('node:child_process').ChildProcess} prozess
+ */
+async function toeteChrome(prozess) {
+  const beendet =
+    prozess.exitCode !== null || prozess.signalCode !== null
+      ? Promise.resolve()
+      : new Promise((r) => prozess.once('exit', r))
+  if (!signalAnGruppe(prozess, 'SIGKILL')) prozess.kill('SIGKILL')
+  await beendet
+  // Verwaiste Zombies zählen noch zur Gruppe. Darum mit Frist warten.
+  const ende = Date.now() + GRUPPEN_FRIST_MS
+  while (signalAnGruppe(prozess, 0) && Date.now() < ende) await warte(50)
+}
+
+/**
+ * Beendet Chrome geordnet und räumt übrige Prozesse der Gruppe ab.
  * @param {import('node:child_process').ChildProcess} prozess
  */
 async function beendeChrome(prozess) {
-  if (prozess.exitCode !== null || prozess.signalCode !== null) return
-  const beendet = new Promise((r) => prozess.once('exit', r))
-  prozess.kill('SIGTERM')
-  const hart = setTimeout(() => prozess.kill('SIGKILL'), 3000)
-  await beendet
-  clearTimeout(hart)
+  if (prozess.exitCode === null && prozess.signalCode === null) {
+    const beendet = new Promise((r) => prozess.once('exit', r))
+    prozess.kill('SIGTERM')
+    const hart = setTimeout(() => prozess.kill('SIGKILL'), 3000)
+    await beendet
+    clearTimeout(hart)
+  }
+  await toeteChrome(prozess)
 }
 
 /**
@@ -290,7 +329,7 @@ function messAusdruck(selektoren) {
 
 /**
  * Aufräumer laufender Prüfungen, für den Abbruch durch ein Signal.
- * @type {Set<() => void>}
+ * @type {Set<() => Promise<void>>}
  */
 const aufraeumer = new Set()
 
@@ -307,9 +346,9 @@ export async function pruefe(opt) {
   /** @type {Awaited<ReturnType<typeof verbinde>> | null} */
   let cdp = null
   const fristMs = opt.frist * 1000
-  const notfall = () => {
-    prozess?.kill('SIGKILL')
-    rmSync(profil, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  const notfall = async () => {
+    if (prozess) await toeteChrome(prozess)
+    await rm(profil, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
   aufraeumer.add(notfall)
   try {
@@ -420,8 +459,8 @@ export async function main(argv, einstellung = {}) {
 // Node löst Symlinks für import.meta.url auf, für argv[1] nicht. Darum argv[1] ebenfalls auflösen.
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   for (const signal of /** @type {const} */ (['SIGINT', 'SIGTERM'])) {
-    process.once(signal, () => {
-      for (const f of aufraeumer) f()
+    process.once(signal, async () => {
+      await Promise.allSettled([...aufraeumer].map((f) => f()))
       process.stderr.write(`sichtpruefung: abgebrochen (${signal})\n`)
       process.exit(2)
     })
