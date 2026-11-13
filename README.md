@@ -519,6 +519,18 @@ Skill, der den Arbeitsablauf und die Grenzen beschreibt.
 /plugin install quality@standout
 ```
 
+Aktualisieren nach einem Release, in der Shell:
+
+```
+claude plugin marketplace update standout
+claude plugin update quality@standout
+```
+
+Claude Code holt den Stand vom Default-Branch `main`, nicht vom Git-Tag. Die
+Versionsnummer liest es aus `.claude-plugin/plugin.json`. Ein neuer Commit
+erreicht die Nutzer erst, wenn diese Nummer steigt. Laufende Sessions behalten
+die alte Version. Starte sie neu oder rufe `/reload-plugins` auf.
+
 | Hook        | Wann               | Was                                                                                                                                           |
 | ----------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | PreToolUse  | vor Edit/Write     | verweigert Schreibzugriff auf Baselines, Gate- und Linter-Konfiguration, CI-Workflows; bei einer Baseline nennt die Ablehnung `quality prune` |
