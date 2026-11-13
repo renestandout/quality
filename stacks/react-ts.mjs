@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import {
   JS_LOCKFILES,
   LINT_STRICT_FLAG,
@@ -201,6 +201,74 @@ function excludedByGit(dir) {
 }
 
 /**
+ * Version eines Pakets neben seinem Binary in node_modules/.bin.
+ *
+ * @param {string} bin Pfad zu node_modules/.bin/<name>
+ * @param {string} name
+ * @returns {number[] | null} [major, minor, patch] oder null, wenn unbekannt
+ */
+function packageVersion(bin, name) {
+  const version = readJson(join(dirname(dirname(bin)), name, 'package.json'))?.version
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(String(version ?? ''))
+  return match ? match.slice(1).map(Number) : null
+}
+
+/**
+ * @param {number[] | null} version
+ * @param {number[]} minimum
+ */
+function atLeast(version, minimum) {
+  if (!version) return false
+  for (let i = 0; i < minimum.length; i++) {
+    const have = version[i] ?? 0
+    const need = minimum[i] ?? 0
+    if (have !== need) return have > need
+  }
+  return true
+}
+
+/**
+ * Nutzt eslint eine Flat Config? Nur dann kennt es --no-warn-ignored.
+ * Mit .eslintrc bricht eslint bei der Option ab (geprüft mit 8.57.1 und 9.39.5).
+ * Ist die Lage unklar, gilt nein: dann bleibt der Aufruf wie bisher.
+ *
+ * @param {string} bin
+ * @param {StackContext} ctx
+ */
+function eslintUsesFlatConfig(bin, ctx) {
+  const env = process.env.ESLINT_USE_FLAT_CONFIG
+  if (env === 'false') return false
+  const version = packageVersion(bin, 'eslint')
+  if (atLeast(version, [9, 0, 0])) return true
+  if (!atLeast(version, [8, 57, 0])) return false
+  if (env === 'true') return true
+  return [ctx.dir, ctx.root].some(
+    (base) =>
+      base &&
+      ['eslint.config.js', 'eslint.config.mjs', 'eslint.config.cjs'].some((f) =>
+        existsSync(join(base, f)),
+      ),
+  )
+}
+
+/**
+ * Zusatzoptionen im Datei-Lauf. Beide Linter halten ihre Ignores auch bei
+ * genannten Dateien ein. Ohne die Optionen würde der Lauf trotzdem rot:
+ * - eslint warnt bei jeder ignorierten Datei. Unter strict (--max-warnings=0)
+ *   macht die Warnung den Lauf rot.
+ * - oxlint endet ab 1.60.0 mit Exit 1, wenn nach den Ignores keine Datei
+ *   bleibt. Ältere Versionen enden dann mit 0 und kennen die Option nicht.
+ * Dateien innerhalb der Prüffläche prüfen beide weiterhin voll.
+ *
+ * @type {Record<'oxlint' | 'eslint', (bin: string, ctx: StackContext) => string[]>}
+ */
+const LINT_FILE_ARGS = {
+  oxlint: (bin) =>
+    atLeast(packageVersion(bin, 'oxlint'), [1, 60, 0]) ? ['--no-error-on-unmatched-pattern'] : [],
+  eslint: (bin, ctx) => (eslintUsesFlatConfig(bin, ctx) ? ['--no-warn-ignored'] : []),
+}
+
+/**
  * Ein Pfad aus excludedByGit als prettier-Negation. Ein Ordner braucht "/**":
  * prettier wertet "!ordner/" nicht aus und prüfte den Inhalt weiter.
  *
@@ -284,7 +352,9 @@ export default {
             bin,
             [
               ...(strict ? [LINT_STRICT_FLAG[tool]] : []),
-              ...(wantsFiles && ctx.files ? ctx.files : fallbackArgs),
+              ...(wantsFiles && ctx.files
+                ? [...LINT_FILE_ARGS[tool](bin, ctx), ...ctx.files]
+                : fallbackArgs),
             ],
             ctx.dir,
             ctx.root,

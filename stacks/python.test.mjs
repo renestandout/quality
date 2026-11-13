@@ -160,3 +160,34 @@ test('test: ein eigener Testbefehl läuft auch ohne .venv unverändert', (t) => 
   const step = python.test?.(context(dir, { component }))
   assert.equal(step?.cmd, 'uv')
 })
+
+/**
+ * Ein Projekt mit lokalem ruff in .venv. Ausgeführt wird ruff hier nie.
+ *
+ * @param {import('node:test').TestContext} t
+ * @returns {string}
+ */
+function withRuff(t) {
+  const dir = uninstalled(t)
+  mkdirSync(join(dir, '.venv', 'bin'), { recursive: true })
+  writeFileSync(join(dir, '.venv', 'pyvenv.cfg'), '')
+  writeFileSync(join(dir, '.venv', 'bin', 'ruff'), '')
+  return dir
+}
+
+// Hintergrund: Kommentar an targets() in python.mjs.
+for (const verb of /** @type {const} */ (['fmt', 'lint'])) {
+  test(`${verb}: der Datei-Lauf hält die ruff-Excludes ein`, (t) => {
+    const dir = withRuff(t)
+    const step = python[verb]?.(context(dir, { files: ['legacy/alt.py'] }))
+    assert.ok(step?.args?.includes('--force-exclude'))
+    assert.equal(step?.args?.at(-1), 'legacy/alt.py')
+  })
+
+  test(`${verb}: der volle Lauf bleibt ohne --force-exclude`, (t) => {
+    const dir = withRuff(t)
+    const step = python[verb]?.(context(dir))
+    assert.equal(step?.args?.includes('--force-exclude'), false)
+    assert.equal(step?.args?.at(-1), '.')
+  })
+}

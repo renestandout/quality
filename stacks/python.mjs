@@ -170,8 +170,16 @@ function hasTests(dir) {
 
 const isTestFile = (/** @type {string} */ f) => TEST_NAME.test(f.split('/').pop() ?? '')
 
-/** Ziel eines Werkzeugs: die geänderten Dateien, sonst das ganze Verzeichnis. */
-const targets = (/** @type {StackContext} */ ctx) => (ctx.files?.length ? ctx.files : ['.'])
+/**
+ * Ziel eines Werkzeugs: die geänderten Dateien, sonst das ganze Verzeichnis.
+ *
+ * ruff prüft genannte Dateien auch dann, wenn exclude sie ausschliesst
+ * (geprüft mit ruff 0.17.5). --force-exclude hält exclude auch dort ein.
+ * Bleibt keine Datei übrig, endet ruff mit Exit 0 und prüft nicht das
+ * ganze Verzeichnis.
+ */
+const targets = (/** @type {StackContext} */ ctx) =>
+  ctx.files?.length ? ['--force-exclude', ...ctx.files] : ['.']
 
 /** @satisfies {Stack} */
 export default {

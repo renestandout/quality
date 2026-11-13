@@ -568,3 +568,81 @@ for (const [verb, tool, rest] of /** @type {const} */ ([
     assert.deepEqual(step?.args, [...IN_CONTAINER, `node_modules/.bin/${tool}`, ...rest])
   })
 }
+
+/**
+ * Ein Projekt mit genau einem Linter in node_modules, in der genannten
+ * Version. Ausgeführt wird der Linter hier nie.
+ *
+ * @param {import('node:test').TestContext} t
+ * @param {'oxlint' | 'eslint'} tool
+ * @param {string} version
+ * @param {string[]} [configs] Konfigurationsdateien, die angelegt werden
+ * @returns {string}
+ */
+function withLinter(t, tool, version, configs = []) {
+  const dir = repo()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ devDependencies: { [tool]: version } }))
+  writeFileSync(join(dir, 'node_modules', '.bin', tool), '')
+  mkdirSync(join(dir, 'node_modules', tool))
+  writeFileSync(join(dir, 'node_modules', tool, 'package.json'), JSON.stringify({ version }))
+  for (const file of configs) writeFileSync(join(dir, file), '')
+  return dir
+}
+
+/**
+ * @param {string} dir
+ * @param {string[] | null} files
+ * @returns {string[] | undefined}
+ */
+const lintArgs = (dir, files) => reactTs.lint?.(context(dir, { files }))?.args
+
+// Hintergrund: Kommentar an LINT_FILE_ARGS in react-ts.mjs.
+test('lint: oxlint ab 1.60 bricht im Datei-Lauf ohne übrige Datei nicht ab', (t) => {
+  const dir = withLinter(t, 'oxlint', '1.60.0')
+  assert.deepEqual(lintArgs(dir, ['legacy/alt.ts']), [
+    '--no-error-on-unmatched-pattern',
+    'legacy/alt.ts',
+  ])
+})
+
+test('lint: oxlint vor 1.60 kennt die Option nicht und bekommt sie nicht', (t) => {
+  const dir = withLinter(t, 'oxlint', '1.59.0')
+  assert.deepEqual(lintArgs(dir, ['legacy/alt.ts']), ['legacy/alt.ts'])
+})
+
+test('lint: oxlint im vollen Lauf bleibt ohne die Option', (t) => {
+  const dir = withLinter(t, 'oxlint', '1.60.0')
+  assert.deepEqual(lintArgs(dir, null), [])
+})
+
+test('lint: eslint 9 meldet im Datei-Lauf ignorierte Dateien nicht als Warnung', (t) => {
+  const dir = withLinter(t, 'eslint', '9.39.5', ['eslint.config.mjs'])
+  assert.deepEqual(lintArgs(dir, ['legacy/alt.ts']), ['--no-warn-ignored', 'legacy/alt.ts'])
+})
+
+test('lint: eslint 9 im vollen Lauf bleibt ohne --no-warn-ignored', (t) => {
+  const dir = withLinter(t, 'eslint', '9.39.5', ['eslint.config.mjs'])
+  assert.deepEqual(lintArgs(dir, null), ['.'])
+})
+
+test('lint: eslint 9 mit ESLINT_USE_FLAT_CONFIG=false bekommt kein --no-warn-ignored', (t) => {
+  const before = process.env.ESLINT_USE_FLAT_CONFIG
+  process.env.ESLINT_USE_FLAT_CONFIG = 'false'
+  t.after(() => {
+    if (before === undefined) delete process.env.ESLINT_USE_FLAT_CONFIG
+    else process.env.ESLINT_USE_FLAT_CONFIG = before
+  })
+  const dir = withLinter(t, 'eslint', '9.39.5', ['.eslintrc.json'])
+  assert.deepEqual(lintArgs(dir, ['app.ts']), ['app.ts'])
+})
+
+test('lint: eslint 8 mit .eslintrc bekommt kein --no-warn-ignored', (t) => {
+  const dir = withLinter(t, 'eslint', '8.57.1', ['.eslintrc.json'])
+  assert.deepEqual(lintArgs(dir, ['app.ts']), ['app.ts'])
+})
+
+test('lint: eslint 8.57 mit eslint.config.mjs bekommt --no-warn-ignored', (t) => {
+  const dir = withLinter(t, 'eslint', '8.57.1', ['eslint.config.mjs'])
+  assert.deepEqual(lintArgs(dir, ['app.ts']), ['--no-warn-ignored', 'app.ts'])
+})
