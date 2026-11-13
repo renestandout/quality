@@ -597,7 +597,7 @@ function withLinter(t, tool, version, configs = []) {
  */
 const lintArgs = (dir, files) => reactTs.lint?.(context(dir, { files }))?.args
 
-// Hintergrund: Kommentar an LINT_FILE_ARGS in react-ts.mjs.
+// Hintergrund: Kommentar an LINT_FILE_RUN in react-ts.mjs.
 test('lint: oxlint ab 1.60 bricht im Datei-Lauf ohne übrige Datei nicht ab', (t) => {
   const dir = withLinter(t, 'oxlint', '1.60.0')
   assert.deepEqual(lintArgs(dir, ['legacy/alt.ts']), [
@@ -645,4 +645,33 @@ test('lint: eslint 8 mit .eslintrc bekommt kein --no-warn-ignored', (t) => {
 test('lint: eslint 8.57 mit eslint.config.mjs bekommt --no-warn-ignored', (t) => {
   const dir = withLinter(t, 'eslint', '8.57.1', ['eslint.config.mjs'])
   assert.deepEqual(lintArgs(dir, ['app.ts']), ['--no-warn-ignored', 'app.ts'])
+})
+
+/**
+ * Ersetzt das eslint-Paket durch eine API, die alles unter legacy/ ignoriert.
+ * So prüft der Test die Verdrahtung ohne echtes eslint.
+ *
+ * @param {string} dir
+ */
+function fakeEslintApi(dir) {
+  const pkg = join(dir, 'node_modules', 'eslint')
+  writeFileSync(join(pkg, 'package.json'), JSON.stringify({ version: '8.57.1', main: 'index.js' }))
+  writeFileSync(
+    join(pkg, 'index.js'),
+    'exports.ESLint = class { async isPathIgnored(f) { return f.startsWith("legacy/") } }\n',
+  )
+}
+
+test('lint: eslint mit .eslintrc bekommt im Datei-Lauf nur Dateien, die es nicht ignoriert', (t) => {
+  const dir = withLinter(t, 'eslint', '8.57.1', ['.eslintrc.json'])
+  fakeEslintApi(dir)
+  assert.deepEqual(lintArgs(dir, ['legacy/alt.ts', 'app.ts']), ['app.ts'])
+})
+
+test('lint: ignoriert eslint mit .eslintrc alle Dateien, entfällt der Schritt', (t) => {
+  const dir = withLinter(t, 'eslint', '8.57.1', ['.eslintrc.json'])
+  fakeEslintApi(dir)
+  const step = reactTs.lint?.(context(dir, { files: ['legacy/alt.ts'] }))
+  assert.equal(step?.cmd, undefined)
+  assert.ok(step?.skip)
 })

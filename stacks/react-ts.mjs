@@ -252,20 +252,70 @@ function eslintUsesFlatConfig(bin, ctx) {
 }
 
 /**
- * Zusatzoptionen im Datei-Lauf. Beide Linter halten ihre Ignores auch bei
- * genannten Dateien ein. Ohne die Optionen würde der Lauf trotzdem rot:
+ * Fragt eslint im .eslintrc-Modus, welche Dateien es nicht ignoriert.
+ *
+ * Mit .eslintrc kennt eslint keine Option gegen die Warnung bei ignorierten
+ * Dateien. quality filtert deshalb vorab über isPathIgnored aus der API des
+ * Projekt-eslint. So gelten .eslintignore und ignorePatterns genau wie bei
+ * eslint selbst (geprüft mit 8.57.1 und 9.39.5).
+ *
+ * @param {string} bin
+ * @param {StackContext} ctx
+ * @param {string[]} files
+ * @returns {string[]} die nicht ignorierten Dateien; bei einem Fehler alle
+ */
+function eslintrcKeeps(bin, ctx, files) {
+  const script = `
+    const { createRequire } = require('node:module')
+    const [pkg, ...files] = process.argv.slice(1)
+    const api = createRequire(pkg)('eslint')
+    ;(async () => {
+      const ESLint = api.loadESLint ? await api.loadESLint({ useFlatConfig: false }) : api.ESLint
+      const eslint = new ESLint({ cwd: process.cwd() })
+      const keep = []
+      for (const f of files) if (!(await eslint.isPathIgnored(f))) keep.push(f)
+      process.stdout.write(JSON.stringify(keep))
+    })().catch(() => process.exit(2))
+  `
+  const pkg = join(dirname(dirname(bin)), 'eslint', 'package.json')
+  try {
+    const out = execFileSync(process.execPath, ['-e', script, pkg, ...files], {
+      cwd: ctx.dir,
+      encoding: 'utf8',
+      stdio: 'pipe',
+      timeout: 15_000,
+    })
+    const keep = JSON.parse(out)
+    if (Array.isArray(keep) && keep.every((f) => files.includes(f))) return keep
+  } catch {
+    // Unklare Lage: alle Dateien prüfen, das Gate bleibt so hart wie bisher.
+  }
+  return files
+}
+
+/**
+ * Optionen und Dateien im Datei-Lauf. Beide Linter halten ihre Ignores auch
+ * bei genannten Dateien ein. Ohne Zusatz würde der Lauf trotzdem rot:
  * - eslint warnt bei jeder ignorierten Datei. Unter strict (--max-warnings=0)
- *   macht die Warnung den Lauf rot.
+ *   macht die Warnung den Lauf rot. Mit Flat Config hilft --no-warn-ignored,
+ *   mit .eslintrc filtert quality vorab (eslintrcKeeps).
  * - oxlint endet ab 1.60.0 mit Exit 1, wenn nach den Ignores keine Datei
  *   bleibt. Ältere Versionen enden dann mit 0 und kennen die Option nicht.
  * Dateien innerhalb der Prüffläche prüfen beide weiterhin voll.
  *
- * @type {Record<'oxlint' | 'eslint', (bin: string, ctx: StackContext) => string[]>}
+ * @type {Record<'oxlint' | 'eslint', (bin: string, ctx: StackContext, files: string[]) => { options: string[], files: string[] }>}
  */
-const LINT_FILE_ARGS = {
-  oxlint: (bin) =>
-    atLeast(packageVersion(bin, 'oxlint'), [1, 60, 0]) ? ['--no-error-on-unmatched-pattern'] : [],
-  eslint: (bin, ctx) => (eslintUsesFlatConfig(bin, ctx) ? ['--no-warn-ignored'] : []),
+const LINT_FILE_RUN = {
+  oxlint: (bin, _ctx, files) => ({
+    options: atLeast(packageVersion(bin, 'oxlint'), [1, 60, 0])
+      ? ['--no-error-on-unmatched-pattern']
+      : [],
+    files,
+  }),
+  eslint: (bin, ctx, files) =>
+    eslintUsesFlatConfig(bin, ctx)
+      ? { options: ['--no-warn-ignored'], files }
+      : { options: [], files: eslintrcKeeps(bin, ctx, files) },
 }
 
 /**
@@ -346,15 +396,18 @@ export default {
     for (const [tool, fallbackArgs] of linters) {
       const bin = findBinary(tool, { dir: ctx.dir, root: ctx.root, kind: 'js' })
       if (bin) {
+        const name = `${tool} (${ctx.component.path})`
+        const run = wantsFiles && ctx.files ? LINT_FILE_RUN[tool](bin, ctx, ctx.files) : null
+        // Kein Rückfall auf das ganze Projekt, wenn eslint alle Dateien ignoriert.
+        if (run && run.files.length === 0)
+          return { name, skip: `nur Dateien, die ${tool} ignoriert` }
         return {
-          name: `${tool} (${ctx.component.path})`,
+          name,
           ...jsCommand(
             bin,
             [
               ...(strict ? [LINT_STRICT_FLAG[tool]] : []),
-              ...(wantsFiles && ctx.files
-                ? [...LINT_FILE_ARGS[tool](bin, ctx), ...ctx.files]
-                : fallbackArgs),
+              ...(run ? [...run.options, ...run.files] : fallbackArgs),
             ],
             ctx.dir,
             ctx.root,
