@@ -2,7 +2,7 @@
 // Sichtprüfung: misst eine Seite headless auf horizontalen Überlauf und speichert PNGs.
 // Chrome läuft mit Wegwerf-Profil. Das persönliche Profil bleibt unberührt.
 import { spawn } from 'node:child_process'
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, realpathSync, rmSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -417,7 +417,8 @@ export async function main(argv, einstellung = {}) {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Node löst Symlinks für import.meta.url auf, für argv[1] nicht. Darum argv[1] ebenfalls auflösen.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   for (const signal of /** @type {const} */ (['SIGINT', 'SIGTERM'])) {
     process.once(signal, () => {
       for (const f of aufraeumer) f()

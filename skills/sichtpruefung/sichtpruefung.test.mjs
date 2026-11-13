@@ -1,7 +1,7 @@
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
-import { execFileSync, spawn } from 'node:child_process'
+import { mkdtemp, readdir, readFile, rm, symlink } from 'node:fs/promises'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
@@ -262,4 +262,26 @@ test('CLI: SIGTERM beendet Chrome, löscht das Profil und endet mit Exit 2', asy
   } finally {
     server.schliesse()
   }
+})
+
+test('CLI: Aufruf über einen Symlink ergibt Exit 1 und schreibt befund.json', async () => {
+  const basis = await ordner('sichtpruefung-link-')
+  const link = path.join(basis, 'skill')
+  await symlink(path.dirname(fileURLToPath(import.meta.url)), link, 'dir')
+  const aus = path.join(basis, 'aus')
+  const lauf = spawnSync(
+    process.execPath,
+    [
+      path.join(link, 'sichtpruefung.mjs'),
+      fixture('ueberlauf.html'),
+      '--selektor',
+      '.flaeche',
+      '--aus',
+      aus,
+    ],
+    { encoding: 'utf8' },
+  )
+  assert.equal(lauf.status, 1, lauf.stderr)
+  const befund = JSON.parse(await readFile(path.join(aus, 'befund.json'), 'utf8'))
+  assert.equal(befund.ziel, fixture('ueberlauf.html'))
 })
