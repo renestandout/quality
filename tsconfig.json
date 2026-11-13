@@ -17,6 +17,7 @@
     "guards/*.mjs",
     "hooks/**/*.mjs",
     "lib/*.mjs",
+    "scripts/*.mjs",
     "stacks/*.mjs",
     "skills/*/*.mjs"
   ]

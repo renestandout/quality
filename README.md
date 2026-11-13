@@ -529,7 +529,8 @@ claude plugin update quality@standout
 Claude Code holt den Stand vom Default-Branch `main`, nicht vom Git-Tag. Die
 Versionsnummer liest es aus `.claude-plugin/plugin.json`. Ein neuer Commit
 erreicht die Nutzer erst, wenn diese Nummer steigt. Laufende Sessions behalten
-die alte Version. Starte sie neu oder rufe `/reload-plugins` auf.
+die alte Version. Starte sie neu oder rufe `/reload-plugins` auf. Wie ein
+Release entsteht, steht unter [Release von quality](#release-von-quality).
 
 | Hook        | Wann               | Was                                                                                                                                           |
 | ----------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -638,6 +639,43 @@ Die Prüfung läuft trotzdem und meldet ihr Ergebnis. Danach lässt sie durch un
 schreibt `deploy-check: override <sha> — <Begründung>`. Ein leerer Wert zählt
 nicht. Wie der Aufruf in ein Deploy-Skript gehört, zeigt
 [`examples/deploy-gate.sh`](examples/deploy-gate.sh).
+
+## Release von quality
+
+Ein Release-Commit entsteht nur auf einem `main` mit grüner CI. Das
+Claude-Code-Plugin holt `main`, sobald die Version in `plugin.json` steigt. Ein
+roter Release-Commit ginge so direkt in die Hooks aller Konten. Am 13.11.2026
+lag 0.2.29 auf einem roten `main` und wurde verworfen. Der Fehler trat nur
+unter Linux auf, lokal war alles grün.
+
+Erzeuge den Versions-Commit deshalb nur mit dem Skript, nie von Hand:
+
+```bash
+git switch main && git pull --ff-only
+node scripts/release.mjs <x.y.z>
+```
+
+Das Skript bricht ab und ändert keine Datei, wenn eine Bedingung fehlt:
+
+- Das Arbeitsverzeichnis ist sauber.
+- Ausgecheckt ist der Branch `main`.
+- HEAD ist gleich `origin/main`. Das Skript holt dafür vorher `origin/main`.
+- Die neue Version ist höher als die in `package.json`.
+- `deploy-check` meldet für HEAD grün (Exit 0).
+
+Danach hebt es die Version in `package.json`, `package-lock.json`,
+`.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` und in den
+Pins dieser README. Es committet `build: Version <x.y.z>`. Die Zeile von
+`deploy-check` steht in der Commit-Message.
+
+Das Skript setzt keinen Tag und pusht nicht. Ergänze die Commit-Message um den
+Inhalt des Releases (`git commit --amend`). Pushe dann `main` und setze den Tag
+`v<x.y.z>`. Ist `main` rot, bring zuerst den Fix auf `main`. Warte, bis die CI
+grün ist, und starte das Skript neu.
+
+Für den Notfall gilt derselbe Override wie beim Deploy:
+`QUALITY_DEPLOY_OVERRIDE="<Begründung>" node scripts/release.mjs <x.y.z>`. Die
+Override-Zeile mit Begründung steht dann in der Commit-Message.
 
 ## Was das Framework NICHT vereinheitlicht
 
