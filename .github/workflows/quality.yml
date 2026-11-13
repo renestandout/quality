@@ -7,8 +7,16 @@ on:
     branches: [main]
 
 jobs:
-  quality:
+  # Die Prüfung läuft auf zwei Node-Versionen. 24 ist die Untergrenze aus
+  # `engines` und die Version der Projekte, die quality einbinden. 26 läuft auf
+  # dem mini im Gate und in den Hooks.
+  pruefen:
+    name: quality (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['24', '26']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -16,7 +24,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ matrix.node }}
           cache: npm
 
       # Ohne die devDependencies findet das Gate weder prettier noch oxlint noch
@@ -45,10 +53,27 @@ jobs:
       # Normalfall nie. Er blockiert den Push nicht, der ist dann schon
       # passiert; er macht ihn sichtbar und färbt main rot.
       # `always()`, damit ein Lauf in einer Runde alles meldet statt in zweien.
+      # Der Check hängt nicht von der Node-Version ab. Er läuft darum nur einmal.
       - name: Tamper-Check
-        if: always() && (github.event_name == 'pull_request' || github.event_name == 'push')
+        if: always() && matrix.node == '26' && (github.event_name == 'pull_request' || github.event_name == 'push')
         env:
           # Pull Request: gegen den Zielbranch. Push: gegen den Stand davor.
           # Beim ersten Push ist das der Null-SHA — der Check überspringt dann.
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
         run: node bin/quality tamper --base "$BASE"
+
+  # Der Branch-Schutz von main verlangt den Check `quality`. Die Matrix-Jobs
+  # heissen anders. Dieser Job trägt den Namen und ist nur grün, wenn alle
+  # Matrix-Jobs grün sind. `always()` sorgt dafür, dass er auch nach einem
+  # roten Matrix-Job läuft und rot meldet, statt übersprungen zu werden.
+  quality:
+    needs: pruefen
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ergebnis der Matrix
+        env:
+          ERGEBNIS: ${{ needs.pruefen.result }}
+        run: |
+          echo "Matrix-Ergebnis: $ERGEBNIS"
+          [ "$ERGEBNIS" = success ]

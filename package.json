@@ -25,7 +25,7 @@
     ".claude-plugin"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "test": "node --test 'bin/*.test.mjs' 'lib/*.test.mjs' 'guards/*.test.mjs' 'configs/*.test.mjs' 'hooks/*.test.mjs' 'stacks/*.test.mjs' 'skills/*/*.test.mjs'"
