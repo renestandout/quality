@@ -1,7 +1,7 @@
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
-import { mkdtemp, readdir, readFile, rm, symlink } from 'node:fs/promises'
+import { existsSync, mkdtempSync } from 'node:fs'
+import { mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import os from 'node:os'
@@ -157,6 +157,30 @@ test('main: fehlendes Chrome ergibt Exit 2 und lässt kein Profil zurück', asyn
     else process.env['SICHTPRUEFUNG_CHROME'] = alt
   }
   assert.deepEqual(await profile(), vorher)
+})
+
+// Auf dem CI-Runner liest der erste Chrome-Start die Programmdateien kalt von
+// der Platte. Das dauerte bis zu 11 s (Diagnose-Lauf 43471596973).
+test('pruefe: ein Chrome mit 11 s Kaltstart liefert trotzdem einen Befund', async () => {
+  const echt = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+  ].find((p) => existsSync(p))
+  assert.ok(echt, 'kein Chrome installiert')
+  const langsam = path.join(await ordner('sichtpruefung-langsam-'), 'chrome')
+  await writeFile(langsam, `#!/bin/sh\nsleep 11\nexec "${echt}" "$@"\n`, { mode: 0o755 })
+  const alt = process.env['SICHTPRUEFUNG_CHROME']
+  process.env['SICHTPRUEFUNG_CHROME'] = langsam
+  try {
+    const { befund } = await pruefeFixture('ok.html')
+    assert.equal(befund.varianten.length, 4)
+  } finally {
+    if (alt === undefined) delete process.env['SICHTPRUEFUNG_CHROME']
+    else process.env['SICHTPRUEFUNG_CHROME'] = alt
+  }
 })
 
 /** Zählt laufende Chrome-Prozesse mit Wegwerf-Profil aus diesen Tests. */

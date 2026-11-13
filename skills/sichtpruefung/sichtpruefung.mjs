@@ -25,7 +25,9 @@ const CHROME_KANDIDATEN = [
   '/usr/bin/chromium',
   '/usr/bin/chromium-browser',
 ]
-const START_FRIST_MS = 10_000
+// So lange darf Chrome bis zum DevTools-Port brauchen. Ein Kaltstart liest die
+// Programmdateien von der Platte. Auf dem CI-Runner dauerte das bis zu 11 s.
+const START_FRIST_MS = 30_000
 // So lange wartet das Aufräumen, bis alle Prozesse der Chrome-Gruppe weg sind.
 const GRUPPEN_FRIST_MS = 3000
 const HOEHE = 800
