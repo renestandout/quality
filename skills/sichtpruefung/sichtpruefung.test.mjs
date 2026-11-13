@@ -8,6 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs, hatUeberlauf, pruefe, main } from './sichtpruefung.mjs'
+import { diagnose } from './diagnose.tmp.mjs'
 
 // Die Tests bekommen ein eigenes Temp-Verzeichnis. Eine parallele
 // Sichtprüfung legt sonst Profile im gemeinsamen Temp-Verzeichnis an, und die
@@ -16,6 +17,9 @@ import { parseArgs, hatUeberlauf, pruefe, main } from './sichtpruefung.mjs'
 const eigenesTemp = mkdtempSync(path.join(os.tmpdir(), 'sichtpruefung-tests-'))
 process.env['TMPDIR'] = eigenesTemp
 after(() => rm(eigenesTemp, { recursive: true, force: true }))
+
+// TEMPORÄR: Diagnose des Chrome-Kaltstarts auf dem CI-Runner.
+test('DIAGNOSE Chrome-Kaltstart', { timeout: 120_000 }, () => diagnose())
 
 test('parseArgs löst eine lokale Datei zur file-URL auf und setzt Standardwerte', () => {
   const opt = parseArgs(['seite.html'], '/x')
