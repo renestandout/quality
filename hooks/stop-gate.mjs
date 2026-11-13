@@ -19,11 +19,11 @@
  * während dieses Gates hätte agent-desk als rotes Gate gewertet oder sie wäre
  * unbemerkt im Merge-Commit gelandet.
  */
-import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { exitAfterFlush } from '../lib/exit.mjs'
+import { gitIn } from '../lib/git.mjs'
 import { findProjectRoot, readHookInput, runQuality } from './lib/hook-io.mjs'
 
 const TIMEOUT_MS = 45_000
@@ -79,13 +79,9 @@ function clearAttempts(file) {
  * @param {string[]} args
  * @returns {string | null}
  */
-function gitIn(root, args) {
+function gitOrNull(root, args) {
   try {
-    return execFileSync('git', args, {
-      cwd: root,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim()
+    return gitIn(args, root)
   } catch {
     return null
   }
@@ -102,7 +98,7 @@ function gitIn(root, args) {
 function integrationLaeuft(root) {
   const marker = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply']
   return marker.some((name) => {
-    const path = gitIn(root, ['rev-parse', '--path-format=absolute', '--git-path', name])
+    const path = gitOrNull(root, ['rev-parse', '--path-format=absolute', '--git-path', name])
     return path !== null && existsSync(path)
   })
 }
@@ -116,7 +112,7 @@ function integrationLaeuft(root) {
  * @returns {boolean}
  */
 function koordinationsSession(root) {
-  const top = gitIn(root, ['rev-parse', '--show-toplevel']) ?? root
+  const top = gitOrNull(root, ['rev-parse', '--show-toplevel']) ?? root
   try {
     return readFileSync(join(top, 'WORKER.md'), 'utf8').startsWith('# Koordinations-Instruktionen')
   } catch {
