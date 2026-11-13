@@ -28,7 +28,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test 'bin/*.test.mjs' 'lib/*.test.mjs' 'guards/*.test.mjs' 'configs/*.test.mjs' 'hooks/*.test.mjs' 'stacks/*.test.mjs'"
+    "test": "node --test 'bin/*.test.mjs' 'lib/*.test.mjs' 'guards/*.test.mjs' 'configs/*.test.mjs' 'hooks/*.test.mjs' 'stacks/*.test.mjs' 'skills/*/*.test.mjs'"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

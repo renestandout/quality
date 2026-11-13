@@ -32,11 +32,13 @@
 ### Task 1: Argumente und Befund
 
 **Files:**
+
 - Create: `skills/sichtpruefung/sichtpruefung.mjs`
 - Test: `skills/sichtpruefung/sichtpruefung.test.mjs`
 - Modify: `package.json` (test-Glob um `'skills/*/*.test.mjs'`), `tsconfig.json` (include `skills/*/*.mjs`)
 
 **Interfaces:**
+
 - Produces: `parseArgs(argv: string[], cwd: string): {ziel: string, breiten: number[], schemata: ('hell'|'dunkel')[], selektoren: string[], aus: string|null}` — wirft `Error` bei ungültiger Eingabe.
 - Produces: `hatUeberlauf(befund: {varianten: {seiteUeberlaeuft: boolean, elemente: unknown[]}[]}): boolean`.
 
@@ -49,11 +51,13 @@
 ### Task 2: Messen im Browser, CLI, Fixtures
 
 **Files:**
+
 - Modify: `skills/sichtpruefung/sichtpruefung.mjs`
 - Create: `skills/sichtpruefung/fixtures/ok.html`, `ueberlauf.html` (`.flaeche` mit `overflow:auto` und 600 px breitem Kind), `dunkel.html` (nur unter `prefers-color-scheme: dark` überläuft `body`)
 - Test: `skills/sichtpruefung/sichtpruefung.test.mjs`
 
 **Interfaces:**
+
 - Produces: `pruefe(opt: ReturnType<typeof parseArgs> & {aus: string}): Promise<Befund>` mit `Befund = {ziel, erstellt, varianten: {breite, schema, seiteUeberlaeuft, seite: {scrollWidth, clientWidth}, elemente: {selektor, index, scrollWidth, clientWidth}[], png}[]}`.
 - Produces: `main(argv): Promise<number>` liefert den Exit-Code. Seite-Überlauf misst `document.documentElement`.
 
@@ -65,6 +69,7 @@
 ### Task 3: SKILL.md und Gate
 
 **Files:**
+
 - Create: `skills/sichtpruefung/SKILL.md`
 
 - [ ] SKILL.md: Frontmatter (`name: sichtpruefung`, Beschreibung mit Triggern), Aufruf, Befund-Format, Exit-Codes, PNGs zeigen per Read-Tool und SendUserFile, Grenzen (nie persönliches Chrome).
