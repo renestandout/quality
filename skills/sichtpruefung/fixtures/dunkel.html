@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>dunkel</title>
+    <style>
+      .breit {
+        height: 40px;
+        background: #333;
+      }
+      @media (prefers-color-scheme: dark) {
+        body {
+          background: #111;
+        }
+        .breit {
+          width: 2000px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="breit"></div>
+  </body>
+</html>
