@@ -1,5 +1,6 @@
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync } from 'node:fs'
 import { mkdtemp, readdir, readFile, rm, symlink } from 'node:fs/promises'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
@@ -7,6 +8,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs, hatUeberlauf, pruefe, main } from './sichtpruefung.mjs'
+
+// Die Tests bekommen ein eigenes Temp-Verzeichnis. Eine parallele
+// Sichtprüfung legt sonst Profile im gemeinsamen Temp-Verzeichnis an, und die
+// Prüfung «räumt auf» meldet fremde Profile als Rest. os.tmpdir() liest TMPDIR
+// bei jedem Aufruf. Das Skript und der CLI-Kindprozess übernehmen den Wert.
+const eigenesTemp = mkdtempSync(path.join(os.tmpdir(), 'sichtpruefung-tests-'))
+process.env['TMPDIR'] = eigenesTemp
+after(() => rm(eigenesTemp, { recursive: true, force: true }))
 
 test('parseArgs löst eine lokale Datei zur file-URL auf und setzt Standardwerte', () => {
   const opt = parseArgs(['seite.html'], '/x')
@@ -150,12 +159,13 @@ test('main: fehlendes Chrome ergibt Exit 2 und lässt kein Profil zurück', asyn
   assert.deepEqual(await profile(), vorher)
 })
 
-/** Zählt laufende Chrome-Prozesse mit Wegwerf-Profil. */
+/** Zählt laufende Chrome-Prozesse mit Wegwerf-Profil aus diesen Tests. */
 function chromeProzesse() {
+  const muster = path
+    .join(eigenesTemp, 'sichtpruefung-profil-')
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   try {
-    return execFileSync('pgrep', ['-f', 'sichtpruefung-profil-'], { encoding: 'utf8' })
-      .trim()
-      .split('\n').length
+    return execFileSync('pgrep', ['-f', muster], { encoding: 'utf8' }).trim().split('\n').length
   } catch {
     return 0
   }

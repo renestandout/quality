@@ -64,7 +64,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
 
       # COMPOSER_AUTH hebt das GitHub-API-Limit an. Ohne Token gelten 60 Anfragen
       # pro Stunde und IP; Composer laedt dist-Archive ueber die API und meldet
