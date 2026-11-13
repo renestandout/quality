@@ -410,3 +410,41 @@ test('phpstan: verweist der gemeinsame Cache auf einen gelöschten Worktree, hei
   assert.match(result.output, /No errors/)
   assert.match(result.output, /Cache/)
 })
+
+/*
+ * Stop-Hook in adboard, 13.11.2026: phpstan.neon nennt app, database und
+ * routes. Der Hook hängte eine geänderte Testdatei trotzdem an. PHPStan
+ * analysiert ausdrücklich genannte Dateien auch ausserhalb von paths. Der
+ * Agent erbte so 40 Altfehler, die der volle Lauf und CI nie prüfen.
+ */
+test('phpstan: eine geänderte Datei ausserhalb der paths fehlt in den Argumenten', (t) => {
+  fakeHost(t, { status: 'running' })
+  const where = project()
+  t.after(() => rmSync(where.root, { recursive: true, force: true }))
+  mkdirSync(join(where.dir, 'app'))
+  writeFileSync(join(where.dir, 'phpstan.neon'), 'parameters:\n    paths:\n        - app\n')
+
+  const step = runnable(
+    laravel.types?.(
+      context(where, { files: ['tests/Feature/ImportTest.php', 'app/Models/User.php'] }),
+    ),
+  )
+  assert.equal(step.args?.at(-1), 'app/Models/User.php')
+  assert.ok(!step.args?.includes('tests/Feature/ImportTest.php'))
+})
+
+test('phpstan: liegt keine geänderte Datei in den paths, entfällt der Lauf statt die ganze Fläche zu prüfen', (t) => {
+  const host = fakeHost(t, { status: 'running' })
+  const where = project()
+  t.after(() => rmSync(where.root, { recursive: true, force: true }))
+  mkdirSync(join(where.dir, 'app'))
+  writeFileSync(join(where.dir, 'phpstan.neon'), 'parameters:\n    paths:\n        - app\n')
+
+  const step = laravel.types?.(context(where, { files: ['tests/Feature/ImportTest.php'] }))
+  assert.match(step?.skip ?? '', /paths/)
+  assert.equal(step?.cmd, undefined)
+  assert.deepEqual(
+    host.calls().filter((c) => c.startsWith('exec')),
+    [],
+  )
+})

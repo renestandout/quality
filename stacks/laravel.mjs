@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { STALE_CACHE_NOTE, healStaleCache } from '../lib/phpstan-cache.mjs'
+import { filesInScope } from '../lib/phpstan-scope.mjs'
 import {
   failingCommand,
   findBinary,
@@ -87,7 +88,19 @@ function phpstanStep(ctx, tool) {
   ]
   // Bei einem Datei-Lauf (Hook) nur die geänderten Dateien prüfen. PHPStan
   // analysiert dann zwar mit weniger Kontext, ist aber in Millisekunden fertig.
-  if (ctx.files?.length) args.push(...ctx.files)
+  // PHPStan prüft genannte Dateien auch ausserhalb von paths. Deshalb kommen
+  // nur Dateien mit, die auch der volle Lauf prüft.
+  if (ctx.files?.length) {
+    const files = filesInScope(ctx.dir, configFile, ctx.files)
+    // Ohne Dateien prüfte PHPStan die ganze Fläche. Das ist kein Datei-Lauf mehr.
+    if (files.length === 0) {
+      return {
+        name: `phpstan level ${ctx.component.phpstanLevel} (${ctx.component.path})`,
+        skip: `keine geänderte Datei liegt in den paths von ${configFile}`,
+      }
+    }
+    args.push(...files)
+  }
   const command = phpCommand(tool, args, ctx.dir)
   return {
     name: `phpstan level ${ctx.component.phpstanLevel} (${ctx.component.path})`,
